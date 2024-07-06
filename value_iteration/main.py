@@ -11,11 +11,15 @@ if __name__ == '__main__':
     random.seed(133)
     np.random.seed(133)
 
-    env = gym.make('SlipperyWalkFive-v0', render_mode='rgb_array')
-    _, __ = env.reset()
+    # Create Slippery Walk Five Environment and Agent
+    # States: Hole - Frozen - Frozen - Start - Frozen - Frozen - Goal
+    # Action: Left or Right
+    # Transition: 50% (go to intended direction), 33.33% (stay in same state), 16.66% (go to reverse direction)
+    SWF_env = gym.make('SlipperyWalkFive-v0', render_mode='rgb_array')
+    _, __ = SWF_env.reset()
 
-    agent = WalkAgent(
-        env=env,
+    SWF_agent = WalkAgent(
+        env=SWF_env,
         n_states=7,
         policy=lambda s: {
             0: WalkAgent.LEFT,
@@ -28,14 +32,35 @@ if __name__ == '__main__':
         }[s]
     )
 
-    env2 = gym.make('FrozenLake-v1', desc=None, map_name="4x4", is_slippery=True, render_mode='rgb_array')
-    env2.metadata["render_fps"] = 60
-    _, __ = env2.reset()
+    # Get the info of agent which has dummy policy
+    print("Current Agent Info : ")
+    print(SWF_agent)
+    print("###########################################################")
 
-    agent2 = FrozenLakeAgent(
-        env=env2,
-        n_cols=4,
+    # Policy Evaluation
+    state_value = SWF_agent.evaluate_policy()
+    print("###########################################################")
+
+    # Let's improve the current policy
+    SWF_agent.get_improved_policy(state_value=state_value)
+    print("###########################################################")
+
+    # Policy Iteration
+    SWF_agent.policy_iteration()
+    print("###########################################################")
+
+    # Value Iteration
+    SWF_agent.value_iteration()
+    print("###########################################################")
+
+    # Create Frozen Lake 4x4 Environment and Agent
+    FL_env = gym.make('FrozenLake-v1', desc=["SFFF", "FHFH", "FFFH", "HFFG"], is_slippery=True, render_mode='rgb_array')
+    _, __ = FL_env.reset()
+
+    FL_agent = FrozenLakeAgent(
+        env=FL_env,
         n_rows=4,
+        n_cols=4,
         policy=lambda s: {
             0: FrozenLakeAgent.RIGHT, 1: FrozenLakeAgent.LEFT, 2: FrozenLakeAgent.DOWN, 3: FrozenLakeAgent.UP,
             4: FrozenLakeAgent.LEFT, 5: FrozenLakeAgent.LEFT, 6: FrozenLakeAgent.RIGHT, 7: FrozenLakeAgent.LEFT,
@@ -43,4 +68,24 @@ if __name__ == '__main__':
             12: FrozenLakeAgent.LEFT, 13: FrozenLakeAgent.RIGHT, 14: FrozenLakeAgent.DOWN, 15: FrozenLakeAgent.LEFT
         }[s]
     )
-    agent2.policy_iteration()
+
+    # Get the info of agent which has dummy policy
+    print("Current Agent Info : ")
+    print(FL_agent)
+    print("###########################################################")
+
+    # Policy Evaluation
+    state_value = FL_agent.evaluate_policy()
+    print("###########################################################")
+
+    # Let's improve the current policy
+    FL_agent.get_improved_policy(state_value=state_value)
+    print("###########################################################")
+
+    # Policy Iteration
+    FL_agent.policy_iteration()
+    print("###########################################################")
+
+    # Value Iteration
+    FL_agent.value_iteration()
+    print("###########################################################")
