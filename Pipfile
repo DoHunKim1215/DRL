@@ -3,6 +3,11 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 name = "pypi"
 
+[[source]]
+url = "https://download.pytorch.org/whl/nightly/cu118"
+verify_ssl = false
+name = "pytorch"
+
 [packages]
 matplotlib = "*"
 numpy = "*"
@@ -10,9 +15,17 @@ gymnasium = "*"
 pygame = "*"
 prettytable = "*"
 plotly = "*"
+ipython = "*"
+opencv-python = "*"
+torch = {version = "*", index = "pytorch"}
+torchvision = {version = "*", index = "pytorch"}
+torchaudio = {version = "*", index = "pytorch"}
 
 [dev-packages]
 
 [requires]
 python_version = "3.8"
 python_full_version = "3.8.10"
+
+[pipenv]
+allow_prereleases = true
