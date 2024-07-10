@@ -1,4 +1,4 @@
-# Deep Reinforcement Learning Examples for beginners
+# Deep Reinforcement Learning Examples
 
 ## Experiment results
 
