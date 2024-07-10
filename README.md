@@ -2,13 +2,13 @@
 
 ## Experiment results
 
-* DQN  vs Double DQN for CartPole-v1
-
-![plot_2_combined.png](results/plot_2_combined.png)
-
 * NFQ vs DQN  vs Double DQN for CartPole-v1
 
 ![plot_combined.png](results/plot_combined.png)
+
+* DDQN vs Dueling DDQN vs Dueling DDQN + PER for CartPole-v1
+
+![plot_3_combined.png](results/plot_3_combined.png)
 
 ## References
 

@@ -10,7 +10,7 @@ def make_dir(dir_path: str):
 def get_args() -> argparse.Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
 
-    model_name = 'NFQ'
+    model_name = 'DuelingDDQN-PER'
 
     # file and directory
     parser.add_argument('--model_out_dir', type=str, default=f'results\\{model_name}\\weights')
@@ -40,8 +40,9 @@ def get_args() -> argparse.Namespace:
                                  'linearly_decaying_epsilon_greedy',
                                  'exponentially_decaying_epsilon_greedy',
                                  'softmax'],
-                        default='epsilon_greedy')
-    parser.add_argument('--model_name', type=str, choices=['NFQ', 'DQN', 'DDQN'], default=model_name)
+                        default='exponentially_decaying_epsilon_greedy')
+    parser.add_argument(
+        '--model_name', type=str, choices=['NFQ', 'DQN', 'DDQN', 'DuelingDDQN', 'DuelingDDQN-PER'], default=model_name)
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--n_warmup_batches', type=int, default=5)
     parser.add_argument('--update_target_every_steps', type=int, default=10)

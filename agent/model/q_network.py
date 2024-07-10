@@ -2,6 +2,7 @@ import argparse
 from typing import Callable, Tuple
 
 import gymnasium
+from torch import Tensor
 from torch.optim import Optimizer
 
 import torch
@@ -17,7 +18,8 @@ import time
 import os
 import gc
 
-from agent.arch import FCQ
+from agent.arch import Q
+from agent.experience import Experience
 from agent.exploration_strategy import ExplorationStrategy
 from agent.experience_buffer import ExperienceBuffer
 from utils.utils import create_video
@@ -27,7 +29,7 @@ class QNetwork:
     ERASE_LINE = '\x1b[2K'
 
     def __init__(self,
-                 value_model_fn: Callable[[int, int], FCQ],
+                 value_model_fn: Callable[[int, int], Q],
                  value_optimizer_fn: Callable[[nn.Module, float], Optimizer],
                  value_optimizer_lr: float,
                  experience_buffer: ExperienceBuffer,
@@ -36,6 +38,8 @@ class QNetwork:
                  training_strategy_fn: Callable[[], ExplorationStrategy],
                  evaluation_strategy_fn: Callable[[], ExplorationStrategy],
                  epochs: int,
+                 update_target_every_steps: int,
+                 tau: float,
                  args: argparse.Namespace):
         assert use_target_network is True or use_double_learning is False, \
             'If you want to use double learning, must use target network with it.'
@@ -52,6 +56,7 @@ class QNetwork:
         self.seed = 0
         self.gamma = 1.0
         self.epochs = epochs
+        self.tau = tau
         self.use_double_learning = use_double_learning
         self.max_gradient_norm = args.max_gradient_norm
         self.leave_print_every_n_secs = args.leave_print_every_n_secs
@@ -69,57 +74,63 @@ class QNetwork:
         self.online_model = None
         self.target_model = None
         self.use_target_network = use_target_network
-        self.update_target_every_steps = args.update_target_every_steps
+        self.update_target_every_steps = update_target_every_steps
         self.value_optimizer = None
         self.experience_buffer = experience_buffer
         self.training_strategy = None
         self.evaluation_strategy = None
 
-    def optimize_double_learning_model_with_target(self, experiences: Tuple):
-        states, actions, rewards, next_states, is_terminals = experiences
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    def optimize_double_learning_model_with_target(self, experiences: Experience):
+        idxs, weights, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
+        batch_size = len(is_terminals)
 
         argmax_a_q_sp = self.online_model(next_states).max(1)[1]
         q_sp = self.target_model(next_states).detach()
-        max_a_q_sp = q_sp[np.arange(self.experience_buffer.batch_size), argmax_a_q_sp].unsqueeze(1)
+        max_a_q_sp = q_sp[np.arange(batch_size), argmax_a_q_sp].unsqueeze(1)
         target_q_sa = rewards + self.gamma * max_a_q_sp * (1 - is_terminals)
         q_sa = self.online_model(states).gather(1, actions)
 
         td_errors = q_sa - target_q_sa
-        value_loss = td_errors.pow(2).mul(0.5).mean()
+        value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
         self.value_optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
         self.value_optimizer.step()
+        self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
-    def optimize_model_with_target(self, experiences: Tuple):
-        states, actions, rewards, next_states, is_terminals = experiences
+    def optimize_model_with_target(self, experiences: Experience):
+        idxs, weights, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
 
         max_a_q_sp = self.target_model(next_states).detach().max(1)[0].unsqueeze(1)
         target_q_sa = rewards + (self.gamma * max_a_q_sp * (1 - is_terminals))
         q_sa = self.online_model(states).gather(1, actions)
 
         td_errors = q_sa - target_q_sa
-        value_loss = td_errors.pow(2).mul(0.5).mean()
+        value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
         self.value_optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
         self.value_optimizer.step()
+        self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
-    def optimize_model_without_target(self, experiences: Tuple):
-        states, actions, rewards, next_states, is_terminals = experiences
+    def optimize_model_without_target(self, experiences: Experience):
+        idxs, weights, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
 
         max_a_q_sp = self.online_model(next_states).detach().max(1)[0].unsqueeze(1)
         target_q_s = rewards + self.gamma * max_a_q_sp * (1 - is_terminals)
         q_sa = self.online_model(states).gather(1, actions)
 
         td_errors = q_sa - target_q_s
-        value_loss = td_errors.pow(2).mul(0.5).mean()
+        value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
         self.value_optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
         self.value_optimizer.step()
+        self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
-    def optimize_model_fn(self) -> Callable[[Tuple], None]:
+    def optimize_model_fn(self) -> Callable[[Experience], None]:
         if self.use_double_learning and self.use_target_network:
             return self.optimize_double_learning_model_with_target
         elif self.use_double_learning is False and self.use_target_network:
@@ -132,9 +143,13 @@ class QNetwork:
         Get experience tuple from interaction with environment.
         :param state: Current state
         :param env: Environment
+        :param step: Current step
         :return: tuple (new state, is_terminal)
         """
-        action = self.training_strategy.select_action(self.online_model, state)
+        if not isinstance(state, Tensor):
+            x = torch.tensor(state, device=self.device, dtype=torch.float32)
+            x = x.unsqueeze(0)
+        action = self.training_strategy.select_action(self.online_model, x)
         new_state, reward, terminated, truncated, _ = env.step(action)
         experience = (state, action, reward, new_state, float(terminated and not truncated))
 
@@ -147,6 +162,16 @@ class QNetwork:
     def update_network(self):
         for target, online in zip(self.target_model.parameters(), self.online_model.parameters()):
             target.data.copy_(online.data)
+
+    def update_network_with_polyak_averaging(self):
+        for target, online in zip(self.target_model.parameters(), self.online_model.parameters()):
+            target.data.copy_((1.0 - self.tau) * target.data + self.tau * online.data)
+
+    def update_network_fn(self):
+        if self.tau == 1.0:
+            return self.update_network
+        else:
+            return self.update_network_with_polyak_averaging
 
     def train(self,
               make_env_fn: Callable,
@@ -175,10 +200,11 @@ class QNetwork:
         self.evaluation_scores = []
         self.episode_exploration = []
 
-        self.online_model = self.value_model_fn(n_states, n_actions)
+        self.online_model = self.value_model_fn(n_states, n_actions).to(self.device)
         if self.use_target_network:
-            self.target_model = self.value_model_fn(n_states, n_actions)
+            self.target_model = self.value_model_fn(n_states, n_actions).to(self.device)
             self.update_network()
+        update_network = self.update_network_fn()
         self.value_optimizer = self.value_optimizer_fn(self.online_model, self.value_optimizer_lr)
         optimize_model = self.optimize_model_fn()
 
@@ -204,13 +230,13 @@ class QNetwork:
 
                 if self.experience_buffer.can_optimize():
                     experiences = self.experience_buffer.sample()
-                    experiences = self.online_model.load(experiences)
+                    experiences.load(self.device)
                     for _ in range(self.epochs):
                         optimize_model(experiences)
                     self.experience_buffer.after_opti_process()
 
                 if self.use_target_network and np.sum(self.episode_timestep) % self.update_target_every_steps == 0:
-                    self.update_network()
+                    update_network()
 
                 if is_terminal:
                     gc.collect()
@@ -308,6 +334,9 @@ class QNetwork:
             state, _ = eval_env.reset()
             results.append(0)
             for step in count():
+                if not isinstance(state, Tensor):
+                    state = torch.tensor(state, device=self.device, dtype=torch.float32)
+                    state = state.unsqueeze(0)
                 action = self.evaluation_strategy.select_action(eval_policy_model, state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
                 results[-1] += reward * pow(self.gamma, step)

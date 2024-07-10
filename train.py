@@ -21,7 +21,7 @@ if __name__ == '__main__':
         seeds.append(random.randint(0, 2**16 - 1))
 
     results = []
-    best_agent, best_eval_score = None, float('-inf')
+    agents, best_agent_key, best_eval_score = {}, None, float('-inf')
     make_env_fn, make_env_kwargs = get_make_env_fn(env_name=args.env_name)
 
     for seed in seeds:
@@ -35,9 +35,10 @@ if __name__ == '__main__':
                           args.max_episodes,
                           args.goal_mean_100_reward)
         results.append(result)
+        agents[seed] = agent
         if final_eval_score > best_eval_score:
             best_eval_score = final_eval_score
-            best_agent = agent
+            best_agent_key = seed
 
     # save training progress data
     np.save(
@@ -46,8 +47,8 @@ if __name__ == '__main__':
     )
 
     # Simulate training progression
-    best_agent.demo_progression()
+    agents[best_agent_key].demo_progression()
     # Simulate last training model
-    best_agent.demo_last()
+    agents[best_agent_key].demo_last()
 
     plot_result(results, args.model_name, args.fig_out_dir, args.figure_name)
