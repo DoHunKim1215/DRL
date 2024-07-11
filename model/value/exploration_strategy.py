@@ -2,8 +2,7 @@ import argparse
 from typing import Callable
 
 import numpy as np
-import torch
-from torch import nn, Tensor
+from torch import nn
 from abc import ABCMeta, abstractmethod
 
 

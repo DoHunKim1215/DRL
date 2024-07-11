@@ -1,5 +1,5 @@
 import argparse
-from typing import Callable, Tuple
+from typing import Callable
 
 import gymnasium
 from torch import Tensor
@@ -11,27 +11,24 @@ import torch.nn as nn
 import numpy as np
 from itertools import count
 
-import os.path
 import random
-import glob
 import time
-import os
 import gc
 
-from agent.arch import Q
-from agent.experience import Experience
-from agent.exploration_strategy import ExplorationStrategy
-from agent.experience_buffer import ExperienceBuffer
-from utils.utils import create_video
+from model.model import RLModel
+from model.value.arch import QNetwork
+from model.value.experience import Experience
+from model.value.exploration_strategy import ExplorationStrategy
+from model.value.experience_buffer import ExperienceBuffer
 
 
-class QNetwork:
+class QModel(RLModel):
     ERASE_LINE = '\x1b[2K'
 
     def __init__(self,
-                 value_model_fn: Callable[[int, int], Q],
-                 value_optimizer_fn: Callable[[nn.Module, float], Optimizer],
-                 value_optimizer_lr: float,
+                 value_model_fn: Callable[[int, int], QNetwork],
+                 optimizer_fn: Callable[[nn.Module, float], Optimizer],
+                 optimizer_lr: float,
                  experience_buffer: ExperienceBuffer,
                  use_target_network: bool,
                  use_double_learning: bool,
@@ -41,46 +38,30 @@ class QNetwork:
                  update_target_every_steps: int,
                  tau: float,
                  args: argparse.Namespace):
+        super(QModel, self).__init__(args)
+
         assert use_target_network is True or use_double_learning is False, \
             'If you want to use double learning, must use target network with it.'
 
-        self.name = args.model_name
         self.value_model_fn = value_model_fn
-        self.value_optimizer_fn = value_optimizer_fn
-        self.value_optimizer_lr = value_optimizer_lr
+        self.optimizer_fn = optimizer_fn
+        self.optimizer_lr = optimizer_lr
         self.training_strategy_fn = training_strategy_fn
         self.evaluation_strategy_fn = evaluation_strategy_fn
-        self.make_env_fn = None
-        self.make_env_kwargs = None
 
-        self.seed = 0
-        self.gamma = 1.0
         self.epochs = epochs
         self.tau = tau
-        self.use_double_learning = use_double_learning
         self.max_gradient_norm = args.max_gradient_norm
-        self.leave_print_every_n_secs = args.leave_print_every_n_secs
-        self.model_out_dir = args.model_out_dir
-        self.video_out_dir = args.video_out_dir
-
-        # stats
-        self.episode_timestep = []
-        self.episode_reward = []
-        self.episode_seconds = []
-        self.evaluation_scores = []
-        self.episode_exploration = []
-        self.frames = []
+        self.use_double_learning = use_double_learning
 
         self.online_model = None
         self.target_model = None
+        self.optimizer = None
         self.use_target_network = use_target_network
         self.update_target_every_steps = update_target_every_steps
-        self.value_optimizer = None
         self.experience_buffer = experience_buffer
         self.training_strategy = None
         self.evaluation_strategy = None
-
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def optimize_double_learning_model_with_target(self, experiences: Experience):
         idxs, weights, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
@@ -94,10 +75,10 @@ class QNetwork:
 
         td_errors = q_sa - target_q_sa
         value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
-        self.value_optimizer.zero_grad()
+        self.optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
-        self.value_optimizer.step()
+        self.optimizer.step()
         self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
     def optimize_model_with_target(self, experiences: Experience):
@@ -109,10 +90,10 @@ class QNetwork:
 
         td_errors = q_sa - target_q_sa
         value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
-        self.value_optimizer.zero_grad()
+        self.optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
-        self.value_optimizer.step()
+        self.optimizer.step()
         self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
     def optimize_model_without_target(self, experiences: Experience):
@@ -124,10 +105,10 @@ class QNetwork:
 
         td_errors = q_sa - target_q_s
         value_loss = (weights * td_errors).pow(2).mul(0.5).mean()
-        self.value_optimizer.zero_grad()
+        self.optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.max_gradient_norm)
-        self.value_optimizer.step()
+        self.optimizer.step()
         self.experience_buffer.update(idxs, np.abs(td_errors.detach().cpu().numpy()))
 
     def optimize_model_fn(self) -> Callable[[Experience], None]:
@@ -139,20 +120,16 @@ class QNetwork:
             return self.optimize_model_without_target
 
     def interaction_step(self, state: np.ndarray, env: gymnasium.Env, step: int):
-        """
-        Get experience tuple from interaction with environment.
-        :param state: Current state
-        :param env: Environment
-        :param step: Current step
-        :return: tuple (new state, is_terminal)
-        """
-        if not isinstance(state, Tensor):
-            x = torch.tensor(state, device=self.device, dtype=torch.float32)
-            x = x.unsqueeze(0)
+        # To tensor
+        x = torch.tensor(state, device=self.device, dtype=torch.float32)
+        x = x.unsqueeze(0)
+
+        # Interaction
         action = self.training_strategy.select_action(self.online_model, x)
         new_state, reward, terminated, truncated, _ = env.step(action)
         experience = (state, action, reward, new_state, float(terminated and not truncated))
 
+        # Record
         self.experience_buffer.store(experience)
         self.episode_reward[-1] += reward * pow(self.gamma, step)
         self.episode_timestep[-1] += 1
@@ -194,18 +171,19 @@ class QNetwork:
         random.seed(self.seed)
 
         n_states, n_actions = env.observation_space.shape[0], env.action_space.n
-        self.episode_timestep = []
-        self.episode_reward = []
-        self.episode_seconds = []
-        self.evaluation_scores = []
-        self.episode_exploration = []
+        self.episode_timestep.clear()
+        self.episode_reward.clear()
+        self.episode_seconds.clear()
+        self.evaluation_scores.clear()
+        self.episode_exploration.clear()
 
         self.online_model = self.value_model_fn(n_states, n_actions).to(self.device)
+        self.replay_model = self.online_model
         if self.use_target_network:
             self.target_model = self.value_model_fn(n_states, n_actions).to(self.device)
             self.update_network()
         update_network = self.update_network_fn()
-        self.value_optimizer = self.value_optimizer_fn(self.online_model, self.value_optimizer_lr)
+        self.optimizer = self.optimizer_fn(self.online_model, self.optimizer_lr)
         optimize_model = self.optimize_model_fn()
 
         self.training_strategy = self.training_strategy_fn()
@@ -262,8 +240,7 @@ class QNetwork:
             std_100_reward = np.std(self.episode_reward[-100:])
             mean_100_eval_score = np.mean(self.evaluation_scores[-100:])
             std_100_eval_score = np.std(self.evaluation_scores[-100:])
-            lst_100_exp_rat = np.array(
-                self.episode_exploration[-100:]) / np.array(self.episode_timestep[-100:])
+            lst_100_exp_rat = np.array(self.episode_exploration[-100:]) / np.array(self.episode_timestep[-100:])
             mean_100_exp_rat = np.mean(lst_100_exp_rat)
             std_100_exp_rat = np.std(lst_100_exp_rat)
 
@@ -320,23 +297,16 @@ class QNetwork:
                  eval_env: gymnasium.Env,
                  n_episodes: int = 1,
                  render: bool = False):
-        """
-        Evaluate a model on the given environment.
-        :param eval_policy_model: action-value model
-        :param eval_env: Environment
-        :param n_episodes: Number of episodes
-        :param render: Whether to render the environment
-        :return: Tuple (mean of returns, std of returns)
-        """
         self.frames.clear()
         results = []
         for _ in range(n_episodes):
             state, _ = eval_env.reset()
             results.append(0)
             for step in count():
-                if not isinstance(state, Tensor):
-                    state = torch.tensor(state, device=self.device, dtype=torch.float32)
-                    state = state.unsqueeze(0)
+                # To tensor
+                state = torch.tensor(state, device=self.device, dtype=torch.float32)
+                state = state.unsqueeze(0)
+                # Interaction
                 action = self.evaluation_strategy.select_action(eval_policy_model, state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
                 results[-1] += reward * pow(self.gamma, step)
@@ -345,92 +315,3 @@ class QNetwork:
                 if terminated or truncated:
                     break
         return np.mean(results), np.std(results)
-
-    def get_cleaned_checkpoints(self, n_checkpoints: int = 5):
-        try:
-            return self.checkpoint_paths
-        except AttributeError:
-            self.checkpoint_paths = {}
-
-        paths = glob.glob(os.path.join(self.model_out_dir, '*.tar'))
-        paths_dic = {}
-        for path in paths:
-            if int(path.split('_')[-1].split('.')[0]) == self.seed:
-                paths_dic[int(path.split('_')[-3])] = path
-        last_ep = max(paths_dic.keys())
-        checkpoint_idxs = np.linspace(1, last_ep + 1, n_checkpoints, endpoint=True, dtype=np.int32) - 1
-
-        for idx, path in paths_dic.items():
-            if idx in checkpoint_idxs:
-                self.checkpoint_paths[idx] = path
-            else:
-                os.unlink(path)
-
-        return self.checkpoint_paths
-
-    def demo_last(self, n_episodes: int = 3):
-        """
-        Record last episode video of current agent in training.
-        """
-        env = self.make_env_fn(**self.make_env_kwargs)
-
-        checkpoint_paths = self.get_cleaned_checkpoints()
-        last_ep = max(checkpoint_paths.keys())
-        self.online_model.load_state_dict(torch.load(checkpoint_paths[last_ep], weights_only=True))
-
-        for ep in range(n_episodes):
-            self.evaluate(self.online_model, env, n_episodes=1, render=True)
-            create_video(
-                self.frames,
-                env.metadata['render_fps'],
-                os.path.join(
-                    self.video_out_dir,
-                    'env_{}_model_{}_seed_{}_trial_{}_last'.format(
-                        self.make_env_kwargs['env_name'],
-                        self.name,
-                        checkpoint_paths[last_ep].split('_')[-1].split('.')[0],
-                        ep
-                    )
-                )
-            )
-
-        env.close()
-        del env
-
-    def demo_progression(self):
-        """
-        Record checkpoint videos of current agent in training.
-        The checkpoints were sampled at equal intervals from 1 to last episode.
-        """
-        env = self.make_env_fn(**self.make_env_kwargs)
-
-        checkpoint_paths = self.get_cleaned_checkpoints()
-        for i in sorted(checkpoint_paths.keys()):
-            self.online_model.load_state_dict(torch.load(checkpoint_paths[i], weights_only=True))
-            self.evaluate(self.online_model, env, n_episodes=1, render=True)
-            create_video(
-                self.frames,
-                env.metadata['render_fps'],
-                os.path.join(
-                    self.video_out_dir,
-                    'env_{}_model_{}_ep_{}_seed_{}'.format(
-                        self.make_env_kwargs['env_name'],
-                        self.name,
-                        checkpoint_paths[i].split('_')[-3],
-                        checkpoint_paths[i].split('_')[-1].split('.')[0],
-                    )
-                )
-            )
-
-        env.close()
-        del env
-
-    def save_checkpoint(self, episode_idx: int, model: nn.Module):
-        torch.save(
-            model.state_dict(),
-            os.path.join(
-                self.model_out_dir,
-                'env_{}_model_{}_ep_{}_seed_{}.tar'.format(
-                    self.make_env_kwargs['env_name'], self.name, episode_idx, self.seed)
-            ),
-        )

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from agent.experience import Experience
+from model.value.experience import Experience
 
 
 class ExperienceBuffer(ABC):

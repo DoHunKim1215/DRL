@@ -10,6 +10,10 @@
 
 ![plot_3_combined.png](results/plot_3_combined.png)
 
+* REINFORCE vs VPG for CartPole-v1
+
+![plot_4_combined.png](results/plot_4_combined.png)
+
 ## References
 
 * Grokking Deep Reinforcement Learning

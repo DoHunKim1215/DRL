@@ -3,7 +3,7 @@ import random
 
 import numpy as np
 
-from agent.model.q_network_factory import create_q_network
+from model.model_factory import create_rl_model
 
 from utils.argument_manager import get_args
 from utils.plot_manager import plot_result
@@ -25,8 +25,8 @@ if __name__ == '__main__':
     make_env_fn, make_env_kwargs = get_make_env_fn(env_name=args.env_name)
 
     for seed in seeds:
-        agent = create_q_network(args.model_name, args)
-        result, final_eval_score, training_time, wallclock_time\
+        agent = create_rl_model(args.model_name, args)
+        result, final_eval_score, training_time, wallclock_time \
             = agent.train(make_env_fn,
                           make_env_kwargs,
                           seed,

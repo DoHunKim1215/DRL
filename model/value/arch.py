@@ -1,15 +1,14 @@
-import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 
 
-class Q(nn.Module):
+class QNetwork(nn.Module):
 
     def __init__(self):
-        super(Q, self).__init__()
+        super(QNetwork, self).__init__()
 
 
-class FCQ(Q):
+class FCQ(QNetwork):
 
     def __init__(self, input_dim: int, output_dim: int, hidden_dims=(32, 32), activation=F.relu):
         super(FCQ, self).__init__()
@@ -30,7 +29,7 @@ class FCQ(Q):
         return x
 
 
-class FCDuelingQ(Q):
+class FCDuelingQ(QNetwork):
 
     def __init__(self, input_dim: int, output_dim: int, hidden_dims=(32, 32), activation=F.relu):
         super(FCDuelingQ, self).__init__()
