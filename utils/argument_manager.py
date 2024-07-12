@@ -10,7 +10,7 @@ def make_dir(dir_path: str):
 def get_args() -> argparse.Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
 
-    model_name = 'VPG'
+    model_name = 'A3C'
 
     # file and directory
     parser.add_argument('--model_out_dir', type=str, default=f'results\\{model_name}\\weights')
@@ -49,7 +49,8 @@ def get_args() -> argparse.Namespace:
                                  'DuelingDDQN',
                                  'DuelingDDQN+PER',
                                  'REINFORCE',
-                                 'VPG'],
+                                 'VPG',
+                                 'A3C'],
                         default=model_name)
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--policy_lr', type=float, default=0.0005)

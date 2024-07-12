@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import Tuple
 
 import numpy as np
@@ -6,7 +7,26 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 
 
-class FCDAP(nn.Module):
+class PNetwork(nn.Module):
+
+    @abstractmethod
+    def forward(self, state: Tensor) -> Tensor:
+        pass
+
+    @abstractmethod
+    def select_action_informatively(self, state: Tensor) -> Tuple:
+        pass
+
+    @abstractmethod
+    def select_action(self, state: Tensor):
+        pass
+
+    @abstractmethod
+    def select_greedy_action(self, state: Tensor):
+        pass
+
+
+class FCDAP(PNetwork):
 
     def __init__(self,
                  input_dim,

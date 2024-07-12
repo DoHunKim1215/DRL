@@ -13,6 +13,7 @@ from utils.utils import create_video
 
 
 class RLModel(ABC):
+    ERASE_LINE = '\x1b[2K'
 
     def __init__(self, args: argparse.Namespace):
         self.name = args.model_name
@@ -39,10 +40,6 @@ class RLModel(ABC):
         self.leave_print_every_n_secs = args.leave_print_every_n_secs
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    @abstractmethod
-    def interaction_step(self, state: np.ndarray, env: gymnasium.Env, step: int):
-        pass
 
     @abstractmethod
     def train(self,

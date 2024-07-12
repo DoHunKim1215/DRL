@@ -1,8 +1,17 @@
+from abc import abstractmethod
+
 from torch import nn
 import torch.nn.functional as F
 
 
-class FCV(nn.Module):
+class VNetwork(nn.Module):
+
+    @abstractmethod
+    def forward(self, state):
+        pass
+
+
+class FCV(VNetwork):
     def __init__(self,
                  input_dim,
                  hidden_dims=(32, 32),

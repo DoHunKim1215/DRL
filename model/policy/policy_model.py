@@ -14,8 +14,7 @@ from torch.optim import Optimizer
 from model.model import RLModel
 
 
-class PModel(RLModel):
-    ERASE_LINE = '\x1b[2K'
+class PolicyModel(RLModel):
 
     def __init__(self,
                  policy_model_fn: Callable[[int, int], nn.Module],
@@ -27,7 +26,7 @@ class PModel(RLModel):
                  value_model_fn: Callable[[int], nn.Module] = None,
                  value_optimizer_fn: Callable[[nn.Module, float], Optimizer] = None,
                  value_optimizer_lr: float = None):
-        super(PModel, self).__init__(args)
+        super(PolicyModel, self).__init__(args)
 
         if use_value_model:
             assert value_model_fn is not None and value_optimizer_fn is not None and value_optimizer_lr is not None, \

@@ -7,8 +7,7 @@ from model.model_factory import create_rl_model
 
 from utils.argument_manager import get_args
 from utils.plot_manager import plot_result
-from utils.utils import get_make_env_fn
-
+from utils.utils import make_env_fn
 
 if __name__ == '__main__':
     # Get program arguments
@@ -22,7 +21,9 @@ if __name__ == '__main__':
 
     results = []
     agents, best_agent_key, best_eval_score = {}, None, float('-inf')
-    make_env_fn, make_env_kwargs = get_make_env_fn(env_name=args.env_name)
+    make_env_kwargs = {
+        'env_name': args.env_name
+    }
 
     for seed in seeds:
         agent = create_rl_model(args.model_name, args)

@@ -2,7 +2,6 @@ import argparse
 from typing import Callable
 
 import gymnasium
-from torch import Tensor
 from torch.optim import Optimizer
 
 import torch
