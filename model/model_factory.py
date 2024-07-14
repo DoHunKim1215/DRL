@@ -2,9 +2,10 @@ import argparse
 
 import torch
 
-from model.actor_critic.async_model import AsyncACModel
+from model.actor_critic.async_model import AsyncActorCriticModel
+from model.actor_critic.sync_model import SyncActorCriticModel
 from model.model import RLModel
-from model.policy_arch import FCDAP
+from model.policy_arch import FCDAP, FCAC
 from model.value_arch import FCV
 from model.policy.policy_model import PolicyModel
 from model.value.arch import FCQ, FCDuelingQ
@@ -14,6 +15,7 @@ from model.value.experience_buffer import ReplayBuffer, ExhaustingBuffer, Priori
 from model.actor_critic.shared_optimizer import SharedAdam, SharedRMSprop
 
 
+# Pickle can't serialize lambda function. So, For async model (e.g. A3C), they should be replaced into global function.
 def get_fcdap(nS, nA):
     return FCDAP(nS, nA, hidden_dims=(128, 64))
 
@@ -146,15 +148,44 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
     elif model_name == 'A3C':
         policy_optimizer_lr = args.policy_lr
         value_optimizer_lr = args.value_lr
-        return AsyncACModel(get_fcdap,
-                            get_shared_adam,
-                            policy_optimizer_lr,
-                            0.001,
-                            args,
-                            get_fcv,
-                            get_shared_rmsprop,
-                            value_optimizer_lr,
-                            50,
-                            8)
+        return AsyncActorCriticModel(get_fcdap,
+                                     get_shared_adam,
+                                     policy_optimizer_lr,
+                                     0.001,
+                                     args,
+                                     get_fcv,
+                                     get_shared_rmsprop,
+                                     value_optimizer_lr,
+                                     50,
+                                     8,
+                                     1.0)
+    elif model_name == 'GAE':
+        policy_optimizer_lr = args.policy_lr
+        value_optimizer_lr = args.value_lr
+        return AsyncActorCriticModel(get_fcdap,
+                                     get_shared_adam,
+                                     policy_optimizer_lr,
+                                     0.001,
+                                     args,
+                                     get_fcv,
+                                     get_shared_rmsprop,
+                                     value_optimizer_lr,
+                                     50,
+                                     8,
+                                     0.99)
+    elif model_name == 'A2C':
+        ac_model_fn = lambda nS, nA: FCAC(nS, nA, hidden_dims=(256, 128))
+        ac_optimizer_fn = lambda net, lr: torch.optim.RMSprop(net.parameters(), lr=lr)
+        ac_optimizer_lr = args.actor_critic_lr
+        return SyncActorCriticModel(ac_model_fn,
+                                    ac_optimizer_fn,
+                                    ac_optimizer_lr,
+                                    1.0,
+                                    0.6,
+                                    0.001,
+                                    10,
+                                    8,
+                                    0.95,
+                                    args)
     else:
         assert False, 'No such model name {}'.format(model_name)

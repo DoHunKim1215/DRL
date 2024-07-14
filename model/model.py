@@ -42,14 +42,7 @@ class RLModel(ABC):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     @abstractmethod
-    def train(self,
-              make_env_fn: Callable,
-              make_env_kwargs: dict,
-              seed: int,
-              gamma: float,
-              max_minutes: int,
-              max_episodes: int,
-              goal_mean_100_reward: int):
+    def train(self, *args):
         pass
 
     @abstractmethod

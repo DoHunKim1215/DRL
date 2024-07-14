@@ -130,7 +130,7 @@ class QModel(RLModel):
 
         # Record
         self.experience_buffer.store(experience)
-        self.episode_reward[-1] += reward * pow(self.gamma, step)
+        self.episode_reward[-1] += float(reward) * pow(self.gamma, step)
         self.episode_timestep[-1] += 1
         self.episode_exploration[-1] += int(self.training_strategy.exploratory_action_taken)
         return new_state, terminated or truncated
@@ -308,7 +308,7 @@ class QModel(RLModel):
                 # Interaction
                 action = self.evaluation_strategy.select_action(eval_policy_model, state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += reward * pow(self.gamma, step)
+                results[-1] += float(reward) * pow(self.gamma, step)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:

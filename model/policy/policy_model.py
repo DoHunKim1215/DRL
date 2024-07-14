@@ -70,7 +70,6 @@ class PolicyModel(RLModel):
         loss = policy_loss + self.entropy_loss_weight * entropy_loss
         self.policy_optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.policy_model_max_gradient_norm)
         self.policy_optimizer.step()
 
     def optimize_policy_and_value_model(self):
@@ -107,8 +106,7 @@ class PolicyModel(RLModel):
 
     def interaction_step(self, state: np.ndarray, env: gymnasium.Env, step: int):
         # To tensor
-        state_tensor = torch.tensor(state, device=self.device, dtype=torch.float32)
-        state_tensor = state_tensor.unsqueeze(0)
+        state_tensor = torch.tensor(state, device=self.device, dtype=torch.float32).unsqueeze(0)
 
         # Interaction
         action, is_exploratory, log_prob, entropy = self.policy_model.select_action_informatively(state_tensor)
@@ -122,7 +120,7 @@ class PolicyModel(RLModel):
             is_failure = terminated and not truncated
             self.values.append(self.value_model(state_tensor) * (1.0 - float(is_failure)))
 
-        self.episode_reward[-1] += reward * pow(self.gamma, step)
+        self.episode_reward[-1] += float(reward) * pow(self.gamma, step)
         self.episode_timestep[-1] += 1
         self.episode_exploration[-1] += int(is_exploratory)
         return new_state, terminated or truncated
@@ -279,7 +277,7 @@ class PolicyModel(RLModel):
                 # Interaction
                 action = eval_policy_model.select_greedy_action(state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += reward * pow(self.gamma, step)
+                results[-1] += float(reward) * pow(self.gamma, step)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:

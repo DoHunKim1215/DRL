@@ -10,7 +10,7 @@ def make_dir(dir_path: str):
 def get_args() -> argparse.Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
 
-    model_name = 'A3C'
+    model_name = 'A2C'
 
     # file and directory
     parser.add_argument('--model_out_dir', type=str, default=f'results\\{model_name}\\weights')
@@ -50,20 +50,24 @@ def get_args() -> argparse.Namespace:
                                  'DuelingDDQN+PER',
                                  'REINFORCE',
                                  'VPG',
-                                 'A3C'],
+                                 'A3C',
+                                 'GAE',
+                                 'A2C'],
                         default=model_name)
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--policy_lr', type=float, default=0.0005)
     parser.add_argument('--value_lr', type=float, default=0.0007)
+    parser.add_argument('--actor_critic_lr', type=float, default=0.001)
     parser.add_argument('--n_warmup_batches', type=int, default=5)
     parser.add_argument('--update_target_every_steps', type=int, default=10)
     parser.add_argument('--max_buffer_size', type=int, default=50000)
     parser.add_argument('--max_gradient_norm', type=float, default=float('inf'))
     parser.add_argument('--policy_model_max_gradient_norm', type=float, default=1.0)
     parser.add_argument('--value_model_max_gradient_norm', type=float, default=float('inf'))
+    parser.add_argument('--ac_model_max_gradient_norm', type=float, default=1.0)
 
     # log
-    parser.add_argument('--leave_print_every_n_secs', type=int, default=60)
+    parser.add_argument('--leave_print_every_n_secs', type=int, default=30)
 
     args = parser.parse_args()
 

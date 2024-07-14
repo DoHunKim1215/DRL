@@ -1,5 +1,3 @@
-import dill
-
 import argparse
 import gc
 import random
@@ -19,7 +17,7 @@ from model.policy_arch import PNetwork
 from model.value_arch import VNetwork
 
 
-class AsyncACModel(RLModel):
+class AsyncActorCriticModel(RLModel):
 
     def __init__(self,
                  policy_model_fn: Callable[[int, int], PNetwork],
@@ -31,8 +29,9 @@ class AsyncACModel(RLModel):
                  value_optimizer_fn: Callable[[nn.Module, float], Optimizer],
                  value_optimizer_lr: float,
                  max_n_steps: int,
-                 n_workers: int):
-        super(AsyncACModel, self).__init__(args)
+                 n_workers: int,
+                 tau: float):
+        super(AsyncActorCriticModel, self).__init__(args)
 
         self.policy_model_fn = policy_model_fn
         self.policy_model_max_grad_norm = args.policy_model_max_gradient_norm
@@ -47,6 +46,7 @@ class AsyncACModel(RLModel):
         self.entropy_loss_weight = entropy_loss_weight
         self.max_n_steps = max_n_steps
         self.n_workers = n_workers
+        self.tau = tau
 
         self.max_minutes = 0
         self.max_episodes = 0
@@ -75,15 +75,22 @@ class AsyncACModel(RLModel):
         T = len(rewards)
         discounts = np.logspace(0, T, num=T, base=self.gamma, endpoint=False)
         returns = np.array([np.sum(discounts[:T - t] * rewards[t:]) for t in range(T)])
-        discounts = torch.FloatTensor(discounts[:-1]).unsqueeze(1)
-        returns = torch.FloatTensor(returns[:-1]).unsqueeze(1)
 
         log_probs = torch.cat(log_probs)
         entropies = torch.cat(entropies)
         values = torch.cat(values)
 
-        value_error = returns - values
-        policy_loss = -(discounts * value_error.detach() * log_probs).mean()
+        np_values = values.view(-1).data.numpy()
+        tau_discounts = np.logspace(0, T - 1, num=T - 1, base=self.gamma * self.tau, endpoint=False)
+        advs = rewards[:-1] + self.gamma * np_values[1:] - np_values[:-1]
+        gaes = np.array([np.sum(tau_discounts[:T - 1 - t] * advs[t:]) for t in range(T - 1)])
+
+        values = values[:-1, ...]
+        discounts = torch.FloatTensor(discounts[:-1]).unsqueeze(1)
+        returns = torch.FloatTensor(returns[:-1]).unsqueeze(1)
+        gaes = torch.FloatTensor(gaes).unsqueeze(1)
+
+        policy_loss = -(discounts * gaes.detach() * log_probs).mean()
         entropy_loss = -entropies.mean()
         loss = policy_loss + self.entropy_loss_weight * entropy_loss
         self.shared_policy_optimizer.zero_grad()
@@ -96,6 +103,7 @@ class AsyncACModel(RLModel):
         self.shared_policy_optimizer.step()
         local_policy_model.load_state_dict(self.shared_policy_model.state_dict())
 
+        value_error = returns - values
         value_loss = value_error.pow(2).mul(0.5).mean()
         self.shared_value_optimizer.zero_grad()
         value_loss.backward()
@@ -116,11 +124,9 @@ class AsyncACModel(RLModel):
                          entropies: List,
                          rewards: List,
                          values: List):
-        state = torch.tensor(state, dtype=torch.float32)
-        state = state.unsqueeze(0)
-
+        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         action, is_exploratory, log_prob, entropy = local_policy_model.select_action_informatively(state)
-        new_state, reward, terminated, truncated, info = env.step(action)
+        new_state, reward, terminated, truncated, _ = env.step(action)
 
         log_probs.append(log_prob)
         entropies.append(entropy)
@@ -129,7 +135,11 @@ class AsyncACModel(RLModel):
 
         return new_state, reward, terminated or truncated, truncated, is_exploratory
 
-    def work(self, rank: int, env: gymnasium.Env, local_policy_model: PNetwork, local_value_model: VNetwork, lock):
+    def work(self,
+             rank: int,
+             env: gymnasium.Env,
+             local_policy_model: PNetwork,
+             local_value_model: VNetwork):
         last_debug_time = float('-inf')
         self.stats['n_active_workers'].add_(1)
 
@@ -175,12 +185,12 @@ class AsyncACModel(RLModel):
                 total_episode_exploration += int(is_exploratory)
 
                 if is_terminal or step - n_steps_start == self.max_n_steps:
-                    is_failure = is_terminal and not is_truncated
-                    if is_failure:
-                        rewards.append(0)
-                    else:
+                    next_value = 0
+                    if not is_terminal or is_truncated:
                         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-                        rewards.append(local_value_model(state_tensor).detach().item())
+                        next_value = local_value_model(state_tensor).detach().item()
+                    rewards.append(next_value)
+                    values.append(torch.FloatTensor([[next_value, ], ]))
 
                     self.optimize_model(log_probs, entropies, rewards, values, local_policy_model, local_value_model)
                     log_probs = []
@@ -208,10 +218,15 @@ class AsyncACModel(RLModel):
             mean_100_reward = self.stats['episode_reward'][:global_episode_idx + 1][-100:].mean().item()
             mean_100_eval_score = self.stats['evaluation_scores'][:global_episode_idx + 1][-100:].mean().item()
             mean_100_exp_rat = self.stats['episode_exploration'][:global_episode_idx + 1][-100:].mean().item()
-            std_10_reward = self.stats['episode_reward'][:global_episode_idx + 1][-10:].std().item()
-            std_100_reward = self.stats['episode_reward'][:global_episode_idx + 1][-100:].std().item()
-            std_100_eval_score = self.stats['evaluation_scores'][:global_episode_idx + 1][-100:].std().item()
-            std_100_exp_rat = self.stats['episode_exploration'][:global_episode_idx + 1][-100:].std().item()
+
+            std_10_reward = self.stats['episode_reward'][:global_episode_idx + 1][-10:].std().item() \
+                if len(self.stats['episode_reward'][:global_episode_idx + 1][-10:]) > 1 else 0
+            std_100_reward = self.stats['episode_reward'][:global_episode_idx + 1][-100:].std().item() \
+                if len(self.stats['episode_reward'][:global_episode_idx + 1][-100:]) > 1 else 0
+            std_100_eval_score = self.stats['evaluation_scores'][:global_episode_idx + 1][-100:].std().item() \
+                if len(self.stats['evaluation_scores'][:global_episode_idx + 1][-100:]) > 1 else 0
+            std_100_exp_rat = self.stats['episode_exploration'][:global_episode_idx + 1][-100:].std().item() \
+                if len(self.stats['episode_exploration'][:global_episode_idx + 1][-100:]) > 1 else 0
 
             if std_10_reward != std_10_reward:
                 std_10_reward = 0
@@ -233,7 +248,7 @@ class AsyncACModel(RLModel):
             self.stats['result'][global_episode_idx][4].add_(wallclock_elapsed)
 
             elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - self.training_start))
-            debug_message = '[{}], episode {:04}, cumulated step {:06}, '
+            debug_message = '[{}] episode {:04}, cumulated step {:06}, '
             debug_message += 'return (MA10) {:05.1f}\u00B1{:05.1f}, '
             debug_message += 'return (MA100) {:05.1f}\u00B1{:05.1f}, '
             debug_message += 'exploration rate (MA100) {:02.1f}\u00B1{:02.1f}, '
@@ -249,7 +264,7 @@ class AsyncACModel(RLModel):
                     print(self.ERASE_LINE + debug_message, flush=True)
                     last_debug_time = time.time()
 
-            with lock:
+            with self.get_out_lock:
                 potential_next_global_episode_idx = self.stats['episode'].item()
                 self.reached_goal_mean_reward.add_(mean_100_eval_score >= self.goal_mean_100_reward)
                 self.reached_max_minutes.add_(time.time() - self.training_start >= self.max_minutes * 60)
@@ -322,13 +337,13 @@ class AsyncACModel(RLModel):
         self.reached_max_episodes = torch.zeros(1, dtype=torch.int).share_memory_()
         self.reached_goal_mean_reward = torch.zeros(1, dtype=torch.int).share_memory_()
 
+        print(f'{self.name} Training start. (seed: {self.seed})')
+
         self.training_start = time.time()
 
-        workers = [mp.Process(target=self.work, args=(rank,
-                                                      self.make_env_fn(**self.make_env_kwargs),
-                                                      self.policy_model_fn(nS, nA),
-                                                      self.value_model_fn(nS),
-                                                      self.get_out_lock)) for rank in range(self.n_workers)]
+        workers = [mp.Process(target=self.work,
+                              args=(rank, self.make_env_fn(**self.make_env_kwargs), self.policy_model_fn(nS, nA),
+                                    self.value_model_fn(nS))) for rank in range(self.n_workers)]
         for w in workers:
             w.start()
         for w in workers:
@@ -364,12 +379,11 @@ class AsyncACModel(RLModel):
             results.append(0)
             for step in count():
                 # To tensor
-                state = torch.tensor(state, dtype=torch.float32)
-                state = state.unsqueeze(0)
+                state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
                 # Interaction
                 action = eval_policy_model.select_greedy_action(state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += reward * pow(self.gamma, step)
+                results[-1] += float(reward) * pow(self.gamma, step)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:
