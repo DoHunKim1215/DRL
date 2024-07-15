@@ -12,15 +12,15 @@ import torch
 from torch import nn
 from torch.optim import Optimizer
 
-from model.model import RLModel
-from model.policy_arch import PNetwork
-from model.value_arch import VNetwork
+from model.agent.rl_model import RLModel
+from model.net.policy_net import StochasticPNetwork
+from model.net.value_net import VNetwork
 
 
 class AsyncActorCriticModel(RLModel):
 
     def __init__(self,
-                 policy_model_fn: Callable[[int, int], PNetwork],
+                 policy_model_fn: Callable[[int, int], StochasticPNetwork],
                  policy_optimizer_fn: Callable[[nn.Module, float], Optimizer],
                  policy_optimizer_lr: float,
                  entropy_loss_weight: float,
@@ -70,7 +70,7 @@ class AsyncActorCriticModel(RLModel):
                        entropies: List,
                        rewards: List,
                        values: List,
-                       local_policy_model: PNetwork,
+                       local_policy_model: StochasticPNetwork,
                        local_value_model: VNetwork):
         T = len(rewards)
         discounts = np.logspace(0, T, num=T, base=self.gamma, endpoint=False)
@@ -118,7 +118,7 @@ class AsyncActorCriticModel(RLModel):
     @staticmethod
     def interaction_step(state: np.ndarray,
                          env: gymnasium.Env,
-                         local_policy_model: PNetwork,
+                         local_policy_model: StochasticPNetwork,
                          local_value_model: VNetwork,
                          log_probs: List,
                          entropies: List,
@@ -138,7 +138,7 @@ class AsyncActorCriticModel(RLModel):
     def work(self,
              rank: int,
              env: gymnasium.Env,
-             local_policy_model: PNetwork,
+             local_policy_model: StochasticPNetwork,
              local_value_model: VNetwork):
         last_debug_time = float('-inf')
         self.stats['n_active_workers'].add_(1)

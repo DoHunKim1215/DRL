@@ -7,11 +7,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 
 
-class PNetwork(nn.Module):
-
-    @abstractmethod
-    def forward(self, state: Tensor) -> Tensor:
-        pass
+class StochasticPNetwork(nn.Module):
 
     @abstractmethod
     def select_action_informatively(self, state: Tensor) -> Tuple:
@@ -26,7 +22,7 @@ class PNetwork(nn.Module):
         pass
 
 
-class FCDAP(PNetwork):
+class FCDAP(StochasticPNetwork):
 
     def __init__(self,
                  input_dim,
@@ -69,7 +65,7 @@ class FCDAP(PNetwork):
         return np.argmax(logits.detach().cpu().numpy())
 
 
-class FCAC(PNetwork):
+class FCAC(StochasticPNetwork):
 
     def __init__(self,
                  input_dim,
@@ -117,3 +113,46 @@ class FCAC(PNetwork):
     def evaluate_state(self, state: Tensor) -> Tensor:
         _, value = self.forward(state)
         return value
+
+
+class DeterministicPNetwork(nn.Module):
+    pass
+
+
+class FCDP(DeterministicPNetwork):
+
+    def __init__(self,
+                 input_dim,
+                 action_bounds,
+                 hidden_dims=(32, 32),
+                 activation_fc=F.relu,
+                 out_activation_fc=F.tanh,
+                 device=torch.device('cpu')):
+        super(FCDP, self).__init__()
+        self.activation_fc = activation_fc
+        self.out_activation_fc = out_activation_fc
+        self.env_min, self.env_max = action_bounds
+        self.device = device
+
+        self.input_layer = nn.Linear(input_dim, hidden_dims[0])
+        self.hidden_layers = nn.ModuleList()
+        for i in range(len(hidden_dims) - 1):
+            hidden_layer = nn.Linear(hidden_dims[i], hidden_dims[i + 1])
+            self.hidden_layers.append(hidden_layer)
+        self.output_layer = nn.Linear(hidden_dims[-1], len(self.env_max))
+
+        self.env_min = torch.tensor(self.env_min, device=self.device, dtype=torch.float32)
+        self.env_max = torch.tensor(self.env_max, device=self.device, dtype=torch.float32)
+        self.nn_min = self.out_activation_fc(torch.Tensor([float('-inf')])).to(self.device)
+        self.nn_max = self.out_activation_fc(torch.Tensor([float('inf')])).to(self.device)
+
+    def rescale(self, x):
+        return (x - self.nn_min) * (self.env_max - self.env_min) / (self.nn_max - self.nn_min) + self.env_min
+
+    def forward(self, state):
+        x = self.activation_fc(self.input_layer(state))
+        for hidden_layer in self.hidden_layers:
+            x = self.activation_fc(hidden_layer(x))
+        x = self.output_layer(x)
+        x = self.out_activation_fc(x)
+        return self.rescale(x)

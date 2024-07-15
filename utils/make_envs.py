@@ -1,4 +1,4 @@
-from model.actor_critic.multiprocess_env import MultiprocessEnv
+from model.multiprocess.multiprocess_env import MultiprocessEnv
 
 
 def make_envs_fn(mef, mea, s, n):

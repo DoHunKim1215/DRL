@@ -14,11 +14,11 @@ import random
 import time
 import gc
 
-from model.model import RLModel
-from model.value.arch import QNetwork
-from model.value.experience import Experience
-from model.value.exploration_strategy import ExplorationStrategy
-from model.value.experience_buffer import ExperienceBuffer
+from model.agent.rl_model import RLModel
+from model.experience.experience import Experience
+from model.experience.experience_buffer import ExperienceBuffer
+from model.net.q_net import QNetwork
+from model.strategy.exploration_strategy import ExplorationStrategy
 
 
 class QModel(RLModel):

@@ -8,8 +8,7 @@ from model.model_factory import create_rl_model
 from utils.argument_manager import get_args
 from utils.make_envs import make_envs_fn
 from utils.plot_manager import plot_result
-from utils.make_env import make_env_fn
-
+from utils.make_env import make_env_fn, create_environment_setting
 
 if __name__ == '__main__':
     # Get program arguments
@@ -24,24 +23,26 @@ if __name__ == '__main__':
     results = []
     agents, best_agent_key, best_eval_score = {}, None, float('-inf')
 
+    env_setting = create_environment_setting(args.env_name)
+
     for seed in seeds:
         agent = create_rl_model(args.model_name, args)
         result, final_eval_score, training_time, wallclock_time \
             = agent.train(make_env_fn,
-                          {'env_name': args.env_name},
+                          {'env_name': env_setting['env_name']},
                           seed,
-                          args.gamma,
-                          args.max_minutes,
-                          args.max_episodes,
-                          args.goal_mean_100_reward) \
+                          env_setting['gamma'],
+                          env_setting['max_minutes'],
+                          env_setting['max_episodes'],
+                          env_setting['goal_mean_100_reward']) \
             if args.model_name != 'A2C' else agent.train(make_envs_fn,
                                                          make_env_fn,
-                                                         {'env_name': args.env_name},
+                                                         {'env_name': env_setting['env_name']},
                                                          seed,
-                                                         args.gamma,
-                                                         args.max_minutes,
-                                                         args.max_episodes,
-                                                         args.goal_mean_100_reward)
+                                                         env_setting['gamma'],
+                                                         env_setting['max_minutes'],
+                                                         env_setting['max_episodes'],
+                                                         env_setting['goal_mean_100_reward'])
 
         results.append(result)
         agents[seed] = agent
@@ -51,7 +52,7 @@ if __name__ == '__main__':
 
     # save training progress data
     np.save(
-        os.path.join(args.log_out_dir, 'env_{}_model_{}'.format(args.env_name, args.model_name)),
+        os.path.join(args.log_out_dir, 'env_{}_model_{}'.format(env_setting['env_name'], args.model_name)),
         np.array(results)
     )
 

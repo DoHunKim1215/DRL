@@ -2,17 +2,18 @@ import argparse
 
 import torch
 
-from model.actor_critic.async_model import AsyncActorCriticModel
-from model.actor_critic.sync_model import SyncActorCriticModel
-from model.model import RLModel
-from model.policy_arch import FCDAP, FCAC
-from model.value_arch import FCV
-from model.policy.policy_model import PolicyModel
-from model.value.arch import FCQ, FCDuelingQ
-from model.value.exploration_strategy import get_strategy, GreedyStrategy
-from model.value.q_model import QModel
-from model.value.experience_buffer import ReplayBuffer, ExhaustingBuffer, PrioritizedReplayBuffer
-from model.actor_critic.shared_optimizer import SharedAdam, SharedRMSprop
+from model.agent.async_ac_model import AsyncActorCriticModel
+from model.agent.policy_model import PolicyModel
+from model.agent.q_model import QModel
+from model.agent.rl_model import RLModel
+from model.agent.sync_ac_model import DeepDeterministicPolicyGradientModel, AdvantageActorCriticModel
+from model.experience.experience_buffer import ExhaustingBuffer, ReplayBuffer, PrioritizedReplayBuffer
+from model.multiprocess.shared_optimizer import SharedAdam, SharedRMSprop
+from model.net.policy_net import FCDP, FCDAP, FCAC
+from model.net.q_net import FCQV, FCQ, FCDuelingQ
+from model.net.value_net import FCV
+from model.strategy.exploration_strategy import GaussianNoiseStrategy, GreedyStrategy, BoundedGreedyStrategy
+from model.strategy.strategy_factory import get_strategy
 
 
 # Pickle can't serialize lambda function. So, For async model (e.g. A3C), they should be replaced into global function.
@@ -177,15 +178,45 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
         ac_model_fn = lambda nS, nA: FCAC(nS, nA, hidden_dims=(256, 128))
         ac_optimizer_fn = lambda net, lr: torch.optim.RMSprop(net.parameters(), lr=lr)
         ac_optimizer_lr = args.actor_critic_lr
-        return SyncActorCriticModel(ac_model_fn,
-                                    ac_optimizer_fn,
-                                    ac_optimizer_lr,
-                                    1.0,
-                                    0.6,
-                                    0.001,
-                                    10,
-                                    8,
-                                    0.95,
-                                    args)
+        return AdvantageActorCriticModel(ac_model_fn,
+                                         ac_optimizer_fn,
+                                         ac_optimizer_lr,
+                                         1.0,
+                                         0.6,
+                                         0.001,
+                                         10,
+                                         8,
+                                         0.95,
+                                         args)
+    elif model_name == 'DDPG':
+        policy_model_fn = lambda nS, bounds, device: FCDP(nS, bounds, hidden_dims=(256, 256), device=device)
+        policy_max_grad_norm = float('inf')
+        policy_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        policy_optimizer_lr = 0.0003
+
+        value_model_fn = lambda nS, nA: FCQV(nS, nA, hidden_dims=(256, 256))
+        value_max_grad_norm = float('inf')
+        value_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        value_optimizer_lr = 0.0003
+
+        training_strategy_fn = lambda bounds: GaussianNoiseStrategy(bounds, exploration_noise_ratio=0.1)
+        evaluation_strategy_fn = lambda bounds: BoundedGreedyStrategy(bounds)
+
+        replay_buffer_fn = lambda: ReplayBuffer(max_size=100000, batch_size=256)
+        return DeepDeterministicPolicyGradientModel(replay_buffer_fn,
+                                                    policy_model_fn,
+                                                    policy_optimizer_fn,
+                                                    policy_optimizer_lr,
+                                                    policy_max_grad_norm,
+                                                    value_model_fn,
+                                                    value_optimizer_fn,
+                                                    value_optimizer_lr,
+                                                    value_max_grad_norm,
+                                                    training_strategy_fn,
+                                                    evaluation_strategy_fn,
+                                                    args.n_warmup_batches,
+                                                    1,
+                                                    0.005,
+                                                    args)
     else:
         assert False, 'No such model name {}'.format(model_name)

@@ -2,7 +2,6 @@ import argparse
 import glob
 import os
 from abc import ABC, abstractmethod
-from typing import Callable
 
 import gymnasium
 import numpy as np

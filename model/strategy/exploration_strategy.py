@@ -1,6 +1,3 @@
-import argparse
-from typing import Callable
-
 import numpy as np
 from torch import nn
 from abc import ABCMeta, abstractmethod
@@ -15,29 +12,8 @@ class ExplorationStrategy(metaclass=ABCMeta):
         pass
 
     @staticmethod
-    def _get_q_values(model: nn.Module, state) -> np.ndarray:
+    def _forward(model: nn.Module, state) -> np.ndarray:
         return model(state).detach().cpu().numpy().squeeze()
-
-
-def get_strategy(name: str) -> Callable[[], ExplorationStrategy]:
-    if name == 'greedy':
-        return lambda: GreedyStrategy()
-    elif name == 'epsilon_greedy':
-        return lambda: EGreedyStrategy(epsilon=0.5)
-    elif name == 'linearly_decaying_epsilon_greedy':
-        return lambda: LinearlyDecayingEGreedyStrategy(init_epsilon=1.0,
-                                                       min_epsilon=0.3,
-                                                       decay_steps=20000)
-    elif name == 'exponentially_decaying_epsilon_greedy':
-        return lambda: ExponentiallyDecayingEGreedyStrategy(init_epsilon=1.0,
-                                                            min_epsilon=0.3,
-                                                            decay_steps=20000)
-    elif name == 'softmax':
-        return lambda: SoftmaxStrategy(init_temp=1.0,
-                                       min_temp=0.1,
-                                       decay_steps=20000)
-    else:
-        assert False, 'Invalid strategy name'
 
 
 class GreedyStrategy(ExplorationStrategy):
@@ -49,7 +25,7 @@ class GreedyStrategy(ExplorationStrategy):
         super().__init__(False)
 
     def select_action(self, model: nn.Module, state):
-        q_values = self._get_q_values(model, state)
+        q_values = self._forward(model, state)
         return np.argmax(q_values)
 
 
@@ -65,7 +41,7 @@ class EGreedyStrategy(ExplorationStrategy):
         self.epsilon = epsilon
 
     def select_action(self, model: nn.Module, state):
-        q_values = self._get_q_values(model, state)
+        q_values = self._forward(model, state)
         if np.random.rand() > self.epsilon:
             action = np.argmax(q_values)
         else:
@@ -96,7 +72,7 @@ class LinearlyDecayingEGreedyStrategy(ExplorationStrategy):
         return epsilon
 
     def select_action(self, model: nn.Module, state):
-        q_values = self._get_q_values(model, state)
+        q_values = self._forward(model, state)
         if np.random.rand() > self.epsilon:
             action = np.argmax(q_values)
         else:
@@ -129,7 +105,7 @@ class ExponentiallyDecayingEGreedyStrategy(ExplorationStrategy):
         return self.epsilon
 
     def select_action(self, model: nn.Module, state):
-        q_values = self._get_q_values(model, state)
+        q_values = self._forward(model, state)
         if np.random.rand() > self.epsilon:
             action = np.argmax(q_values)
         else:
@@ -164,7 +140,7 @@ class SoftmaxStrategy(ExplorationStrategy):
     def select_action(self, model: nn.Module, state):
         temp = self._update_temp()
 
-        q_values = self._get_q_values(model, state)
+        q_values = self._forward(model, state)
         scaled_qs = q_values / temp
         norm_qs = scaled_qs - scaled_qs.max()
         e = np.exp(norm_qs)
@@ -173,4 +149,42 @@ class SoftmaxStrategy(ExplorationStrategy):
 
         action = np.random.choice(np.arange(len(probs)), size=1, p=probs)[0]
         self.exploratory_action_taken = action != np.argmax(q_values)
+        return action
+
+
+class BoundedGreedyStrategy(ExplorationStrategy):
+
+    def __init__(self, bounds):
+        super().__init__(False)
+
+        self.low, self.high = bounds
+        self.ratio_noise_injected = 0
+
+    def select_action(self, model: nn.Module, state):
+        greedy_action = self._forward(model, state)
+        greedy_action = np.clip(greedy_action, self.low, self.high)
+        return np.reshape(greedy_action, self.low.shape)
+
+
+class GaussianNoiseStrategy(ExplorationStrategy):
+
+    def __init__(self, bounds, exploration_noise_ratio: float = 0.1):
+        super().__init__(None)
+
+        self.low, self.high = bounds
+        self.exploration_noise_ratio = exploration_noise_ratio
+        self.ratio_noise_injected = 0
+
+    def select_action(self, model: nn.Module, state, max_exploration: bool = False) -> np.ndarray:
+        if max_exploration:
+            noise_scale = self.high
+        else:
+            noise_scale = self.exploration_noise_ratio * self.high
+
+        greedy_action = self._forward(model, state)
+        noise = np.random.normal(loc=0, scale=noise_scale, size=len(self.high))
+        noisy_action = greedy_action + noise
+        action = np.clip(noisy_action, self.low, self.high)
+
+        self.ratio_noise_injected = np.mean(abs((greedy_action - action) / (self.high - self.low)))
         return action

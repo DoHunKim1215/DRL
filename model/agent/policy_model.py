@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.optim import Optimizer
 
-from model.model import RLModel
+from model.agent.rl_model import RLModel
 
 
 class PolicyModel(RLModel):
