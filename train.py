@@ -61,4 +61,4 @@ if __name__ == '__main__':
     # Simulate last training model
     agents[best_agent_key].demo_last()
 
-    plot_result(results, args.model_name, args.fig_out_dir, args.figure_name)
+    plot_result(results, args.model_name, env_setting['env_name'], args.fig_out_dir, args.figure_name)

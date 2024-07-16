@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 matplotlib.use('TkAgg')
 
 
-def plot_result(results: List, label: str, fig_out_dir: str, fig_name: str):
+def plot_result(results: List, model_name: str, env_name: str, fig_out_dir: str, fig_name: str):
     results = np.array(results)
     max_t, max_r, max_s, max_sec, max_rt = np.max(results, axis=0).T
     min_t, min_r, min_s, min_sec, min_rt = np.min(results, axis=0).T
@@ -19,27 +19,27 @@ def plot_result(results: List, label: str, fig_out_dir: str, fig_name: str):
 
     axs[0].plot(max_r, 'y', linewidth=1)
     axs[0].plot(min_r, 'y', linewidth=1)
-    axs[0].plot(mean_r, 'y', label=label, linewidth=2)
+    axs[0].plot(mean_r, 'y', label=model_name, linewidth=2)
     axs[0].fill_between(x, min_r, max_r, facecolor='y', alpha=0.3)
 
     axs[1].plot(max_s, 'y', linewidth=1)
     axs[1].plot(min_s, 'y', linewidth=1)
-    axs[1].plot(mean_s, 'y', label=label, linewidth=2)
+    axs[1].plot(mean_s, 'y', label=model_name, linewidth=2)
     axs[1].fill_between(x, min_s, max_s, facecolor='y', alpha=0.3)
 
     axs[2].plot(max_t, 'y', linewidth=1)
     axs[2].plot(min_t, 'y', linewidth=1)
-    axs[2].plot(mean_t, 'y', label=label, linewidth=2)
+    axs[2].plot(mean_t, 'y', label=model_name, linewidth=2)
     axs[2].fill_between(x, min_t, max_t, facecolor='y', alpha=0.3)
 
     axs[3].plot(max_sec, 'y', linewidth=1)
     axs[3].plot(min_sec, 'y', linewidth=1)
-    axs[3].plot(mean_sec, 'y', label=label, linewidth=2)
+    axs[3].plot(mean_sec, 'y', label=model_name, linewidth=2)
     axs[3].fill_between(x, min_sec, max_sec, facecolor='y', alpha=0.3)
 
     axs[4].plot(max_rt, 'y', linewidth=1)
     axs[4].plot(min_rt, 'y', linewidth=1)
-    axs[4].plot(mean_rt, 'y', label=label, linewidth=2)
+    axs[4].plot(mean_rt, 'y', label=model_name, linewidth=2)
     axs[4].fill_between(x, min_rt, max_rt, facecolor='y', alpha=0.3)
 
     axs[0].set_title('Moving Avg Reward (Training)')
@@ -49,7 +49,7 @@ def plot_result(results: List, label: str, fig_out_dir: str, fig_name: str):
     axs[4].set_title('Wall-clock Time')
     plt.xlabel('Episodes')
     axs[0].legend(loc='upper left')
-    plt.savefig(os.path.join(fig_out_dir, '{}_model_{}.png'.format(fig_name, label)), dpi=300, format='png')
+    plt.savefig(os.path.join(fig_out_dir, '{}_model_{}_env_{}.png'.format(fig_name, model_name, env_name)), dpi=300, format='png')
     plt.show()
 
 
