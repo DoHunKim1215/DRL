@@ -10,9 +10,10 @@ from model.agent.sync_ac_model import DeepDeterministicPolicyGradientModel, Adva
 from model.experience.experience_buffer import ExhaustingBuffer, ReplayBuffer, PrioritizedReplayBuffer
 from model.multiprocess.shared_optimizer import SharedAdam, SharedRMSprop
 from model.net.policy_net import FCDP, FCDAP, FCAC
-from model.net.q_net import FCQV, FCQ, FCDuelingQ
+from model.net.q_net import FCQV, FCQ, FCDuelingQ, FCTQV
 from model.net.value_net import FCV
-from model.strategy.exploration_strategy import GaussianNoiseStrategy, GreedyStrategy, BoundedGreedyStrategy
+from model.strategy.exploration_strategy import GaussianNoiseStrategy, GreedyStrategy, BoundedGreedyStrategy, \
+    DecayingGaussianNoiseStrategy
 from model.strategy.strategy_factory import get_strategy
 
 
@@ -216,7 +217,50 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
                                                     evaluation_strategy_fn,
                                                     args.n_warmup_batches,
                                                     1,
+                                                    1,
+                                                    1,
                                                     0.005,
+                                                    0.0,
+                                                    0.0,
+                                                    False,
+                                                    args)
+    elif model_name == 'TD3':
+        policy_model_fn = lambda nS, bounds, device: FCDP(nS, bounds, hidden_dims=(256, 256), device=device)
+        policy_max_grad_norm = float('inf')
+        policy_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        policy_optimizer_lr = 0.0003
+
+        value_model_fn = lambda nS, nA: FCTQV(nS, nA, hidden_dims=(256, 256))
+        value_max_grad_norm = float('inf')
+        value_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        value_optimizer_lr = 0.0003
+
+        training_strategy_fn = lambda bounds: DecayingGaussianNoiseStrategy(bounds,
+                                                                            init_noise_ratio=0.5,
+                                                                            min_noise_ratio=0.1,
+                                                                            decay_steps=200000)
+        evaluation_strategy_fn = lambda bounds: BoundedGreedyStrategy(bounds)
+
+        replay_buffer_fn = lambda: ReplayBuffer(max_size=1000000, batch_size=256)
+        return DeepDeterministicPolicyGradientModel(replay_buffer_fn,
+                                                    policy_model_fn,
+                                                    policy_optimizer_fn,
+                                                    policy_optimizer_lr,
+                                                    policy_max_grad_norm,
+                                                    value_model_fn,
+                                                    value_optimizer_fn,
+                                                    value_optimizer_lr,
+                                                    value_max_grad_norm,
+                                                    training_strategy_fn,
+                                                    evaluation_strategy_fn,
+                                                    args.n_warmup_batches,
+                                                    2,
+                                                    2,
+                                                    2,
+                                                    0.01,
+                                                    0.1,
+                                                    0.5,
+                                                    True,
                                                     args)
     else:
         assert False, 'No such model name {}'.format(model_name)

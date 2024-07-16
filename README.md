@@ -14,6 +14,10 @@
 
 ![plot_4_combined.png](results/plot_4_combined.png)
 
+* DDPG vs TD3 for Pendulum-v1
+
+![plot_5_combined.png](results/plot_5_combined.png)
+
 ## References
 
 * Grokking Deep Reinforcement Learning

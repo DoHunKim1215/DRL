@@ -11,7 +11,6 @@ name = "pytorch"
 [packages]
 matplotlib = "*"
 numpy = "*"
-gymnasium = "*"
 pygame = "*"
 prettytable = "*"
 plotly = "*"
@@ -21,6 +20,8 @@ torch = {version = "*", index = "pytorch"}
 torchvision = {version = "*", index = "pytorch"}
 torchaudio = {version = "*", index = "pytorch"}
 dill = "*"
+mujoco-py = "*"
+gymnasium = {extras = ["mujoco"], version = "*"}
 
 [dev-packages]
 

@@ -1,6 +1,9 @@
 import argparse
 import os
 
+import gymnasium
+import torch
+
 
 def make_dir(dir_path: str):
     if not os.path.exists(dir_path):
@@ -10,7 +13,7 @@ def make_dir(dir_path: str):
 def get_args() -> argparse.Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
 
-    model_name = 'DDPG'
+    model_name = 'TD3'
 
     # file and directory
     parser.add_argument('--model_out_dir', type=str, default=f'results\\{model_name}\\weights')
@@ -53,7 +56,8 @@ def get_args() -> argparse.Namespace:
                                  'A3C',
                                  'GAE',
                                  'A2C',
-                                 'DDPG'],
+                                 'DDPG',
+                                 'TD3'],
                         default=model_name)
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--policy_lr', type=float, default=0.0005)

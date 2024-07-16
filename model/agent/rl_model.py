@@ -61,8 +61,11 @@ class RLModel(ABC):
         paths = glob.glob(os.path.join(self.model_out_dir, '*.tar'))
         paths_dic = {}
         for path in paths:
-            if int(path.split('_')[-1].split('.')[0]) == self.seed:
-                paths_dic[int(path.split('_')[-3])] = path
+            path_token = path.split('_')
+            if int(path_token[-1].split('.')[0]) == self.seed and \
+                    path_token[1] == self.make_env_kwargs['env_name'] and \
+                    path_token[3] == self.name:
+                paths_dic[int(path_token[-3])] = path
         last_ep = max(paths_dic.keys())
         checkpoint_idxs = np.linspace(1, last_ep + 1, n_checkpoints, endpoint=True, dtype=np.int32) - 1
 

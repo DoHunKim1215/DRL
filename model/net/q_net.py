@@ -81,3 +81,48 @@ class FCQV(QNetwork):
                 x = torch.cat((x, action), dim=1)
             x = self.activation_fc(hidden_layer(x))
         return self.output_layer(x)
+
+
+class FCTQV(QNetwork):
+
+    def __init__(self,
+                 input_state_dim,
+                 input_action_dim,
+                 hidden_dims=(32, 32),
+                 activation_fc=F.relu):
+        super(FCTQV, self).__init__()
+
+        self.activation_fc = activation_fc
+
+        self.input_layer_a = nn.Linear(input_state_dim + input_action_dim, hidden_dims[0])
+        self.input_layer_b = nn.Linear(input_state_dim + input_action_dim, hidden_dims[0])
+
+        self.hidden_layers_a = nn.ModuleList()
+        self.hidden_layers_b = nn.ModuleList()
+        for i in range(len(hidden_dims) - 1):
+            hidden_layer_a = nn.Linear(hidden_dims[i], hidden_dims[i + 1])
+            self.hidden_layers_a.append(hidden_layer_a)
+
+            hidden_layer_b = nn.Linear(hidden_dims[i], hidden_dims[i + 1])
+            self.hidden_layers_b.append(hidden_layer_b)
+
+        self.output_layer_a = nn.Linear(hidden_dims[-1], 1)
+        self.output_layer_b = nn.Linear(hidden_dims[-1], 1)
+
+    def forward(self, state, action):
+        x = torch.cat((state, action), dim=1)
+        xa = self.activation_fc(self.input_layer_a(x))
+        xb = self.activation_fc(self.input_layer_b(x))
+        for hidden_layer_a, hidden_layer_b in zip(self.hidden_layers_a, self.hidden_layers_b):
+            xa = self.activation_fc(hidden_layer_a(xa))
+            xb = self.activation_fc(hidden_layer_b(xb))
+        xa = self.output_layer_a(xa)
+        xb = self.output_layer_b(xb)
+        return xa, xb
+
+    def Qa(self, state, action):
+        x = torch.cat((state, action), dim=1)
+        xa = self.activation_fc(self.input_layer_a(x))
+        for hidden_layer_a in self.hidden_layers_a:
+            xa = self.activation_fc(hidden_layer_a(xa))
+        return self.output_layer_a(xa)

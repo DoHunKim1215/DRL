@@ -120,7 +120,7 @@ class PolicyModel(RLModel):
             is_failure = terminated and not truncated
             self.values.append(self.value_model(state_tensor) * (1.0 - float(is_failure)))
 
-        self.episode_reward[-1] += float(reward) * pow(self.gamma, step)
+        self.episode_reward[-1] += float(reward)
         self.episode_timestep[-1] += 1
         self.episode_exploration[-1] += int(is_exploratory)
         return new_state, terminated or truncated
@@ -277,7 +277,7 @@ class PolicyModel(RLModel):
                 # Interaction
                 action = eval_policy_model.select_greedy_action(state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += float(reward) * pow(self.gamma, step)
+                results[-1] += float(reward)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:

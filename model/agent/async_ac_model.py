@@ -181,7 +181,7 @@ class AsyncActorCriticModel(RLModel):
                                             values)
 
                 total_episode_steps += 1
-                total_episode_rewards += float(reward) * pow(self.gamma, step)
+                total_episode_rewards += float(reward)
                 total_episode_exploration += int(is_exploratory)
 
                 if is_terminal or step - n_steps_start == self.max_n_steps:
@@ -383,7 +383,7 @@ class AsyncActorCriticModel(RLModel):
                 # Interaction
                 action = eval_policy_model.select_greedy_action(state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += float(reward) * pow(self.gamma, step)
+                results[-1] += float(reward)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:

@@ -15,7 +15,6 @@ from model.agent.rl_model import RLModel
 from model.experience.experience_buffer import ExperienceBuffer
 from model.net.policy_net import StochasticPNetwork, DeterministicPNetwork
 from model.net.q_net import QNetwork
-from model.net.value_net import VNetwork
 from model.strategy.exploration_strategy import ExplorationStrategy
 
 
@@ -69,15 +68,14 @@ class AdvantageActorCriticModel(RLModel):
         values = torch.stack(self.values).squeeze()
 
         T = len(self.rewards)
-        gamma = self.gamma * 0.99
-        discounts = np.logspace(0, T, num=T, base=gamma, endpoint=False)
+        discounts = np.logspace(0, T, num=T, base=self.gamma, endpoint=False)
         rewards = np.array(self.rewards).squeeze()
         returns = np.array([[np.sum(discounts[:T - t] * rewards[t:, w]) for t in range(T)]
                             for w in range(self.n_workers)])
 
         np_values = values.data.numpy()
-        tau_discounts = np.logspace(0, T - 1, num=T - 1, base=gamma * self.tau, endpoint=False)
-        advs = rewards[:-1] + gamma * np_values[1:] - np_values[:-1]
+        tau_discounts = np.logspace(0, T - 1, num=T - 1, base=self.gamma * self.tau, endpoint=False)
+        advs = rewards[:-1] + self.gamma * np_values[1:] - np_values[:-1]
         gaes = np.array([[np.sum(tau_discounts[:T - 1 - t] * advs[t:, w]) for t in range(T - 1)]
                          for w in range(self.n_workers)])
         discounted_gaes = discounts[:-1] * gaes
@@ -290,7 +288,7 @@ class AdvantageActorCriticModel(RLModel):
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
                 action = eval_policy_model.select_greedy_action(state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += float(reward) * pow(self.gamma, step)
+                results[-1] += float(reward)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:
@@ -313,8 +311,13 @@ class DeepDeterministicPolicyGradientModel(RLModel):
                  training_strategy_fn: Callable[[Any], ExplorationStrategy],
                  evaluation_strategy_fn: Callable[[Any], ExplorationStrategy],
                  n_warmup_batches: int,
-                 update_target_every_steps: int,
+                 update_value_target_every_steps: int,
+                 update_policy_target_every_steps: int,
+                 train_policy_every_steps: int,
                  tau: float,
+                 policy_noise_ratio: float,
+                 policy_noise_clip_ratio: float,
+                 use_double_learning: bool,
                  args: argparse.Namespace):
         super().__init__(args)
 
@@ -345,33 +348,95 @@ class DeepDeterministicPolicyGradientModel(RLModel):
         self.evaluation_strategy = None
 
         self.n_warmup_batches = n_warmup_batches
-        self.update_target_every_steps = update_target_every_steps
+        self.update_value_target_every_steps = update_value_target_every_steps
+        self.update_policy_target_every_steps = update_policy_target_every_steps
+        self.train_policy_every_steps = train_policy_every_steps
         self.tau = tau
         self.min_samples = 0
+        self.policy_noise_ratio = policy_noise_ratio
+        self.policy_noise_clip_ratio = policy_noise_clip_ratio
+        self.use_double_learning = use_double_learning
 
-    def optimize_model(self, experiences):
+    def optimize_model_with_single_learning(self, experiences):
         _, __, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
 
-        argmax_a_q_sp = self.target_policy_model(next_states)
-        max_a_q_sp = self.target_value_model(next_states, argmax_a_q_sp)
-        target_q_sa = rewards + self.gamma * max_a_q_sp * (1 - is_terminals)
+        with torch.no_grad():
+            action_min, action_max = self.target_policy_model.env_min, self.target_policy_model.env_max
+            noise_min, noise_max = self.policy_noise_clip_ratio * action_min, self.policy_noise_clip_ratio * action_max
+
+            a_noise = torch.randn(size=actions.shape).to(self.device) * self.policy_noise_ratio * (action_max - action_min)
+            a_noise = torch.clamp(input=a_noise, min=noise_min, max=noise_max)
+
+            argmax_a_q_sp = self.target_policy_model(next_states)
+            noisy_argmax_a_q_sp = argmax_a_q_sp + a_noise
+            noisy_argmax_a_q_sp = torch.clamp(noisy_argmax_a_q_sp, min=action_min, max=action_max)
+
+            max_a_q_sp = self.target_value_model(next_states, noisy_argmax_a_q_sp)
+            target_q_sa = rewards + self.gamma * max_a_q_sp * (1 - is_terminals)
+
         q_sa = self.online_value_model(states, actions)
-        td_error = q_sa - target_q_sa.detach()
+        td_error = q_sa - target_q_sa
         value_loss = td_error.pow(2).mul(0.5).mean()
         self.value_optimizer.zero_grad()
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.online_value_model.parameters(), self.value_max_grad_norm)
         self.value_optimizer.step()
 
-        argmax_a_q_s = self.online_policy_model(states)
-        max_a_q_s = self.online_value_model(states, argmax_a_q_s)
-        policy_loss = -max_a_q_s.mean()
-        self.policy_optimizer.zero_grad()
-        policy_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.online_policy_model.parameters(), self.policy_max_grad_norm)
-        self.policy_optimizer.step()
+        if np.sum(self.episode_timestep) % self.train_policy_every_steps == 0:
+            argmax_a_q_s = self.online_policy_model(states)
+            max_a_q_s = self.online_value_model(states, argmax_a_q_s)
+            policy_loss = -max_a_q_s.mean()
+            self.policy_optimizer.zero_grad()
+            policy_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.online_policy_model.parameters(), self.policy_max_grad_norm)
+            self.policy_optimizer.step()
 
-    def interaction_step(self, state: np.ndarray, env: gymnasium.Env, step: int):
+    def optimize_model_with_double_learning(self, experiences):
+        _, __, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
+
+        with torch.no_grad():
+            action_min, action_max = self.target_policy_model.env_min, self.target_policy_model.env_max
+            noise_min, noise_max = self.policy_noise_clip_ratio * action_min, self.policy_noise_clip_ratio * action_max
+
+            a_noise = torch.randn(size=actions.shape).to(self.device) * self.policy_noise_ratio * (action_max - action_min)
+            a_noise = torch.clamp(input=a_noise, min=noise_min, max=noise_max)
+
+            argmax_a_q_sp = self.target_policy_model(next_states)
+            noisy_argmax_a_q_sp = argmax_a_q_sp + a_noise
+            noisy_argmax_a_q_sp = torch.clamp(input=noisy_argmax_a_q_sp, min=action_min, max=action_max)
+
+            max_a_q_sp_a, max_a_q_sp_b = self.target_value_model(next_states, noisy_argmax_a_q_sp)
+            max_a_q_sp = torch.min(max_a_q_sp_a, max_a_q_sp_b)
+
+            target_q_sa = rewards + self.gamma * max_a_q_sp * (1 - is_terminals)
+
+        q_sa_a, q_sa_b = self.online_value_model(states, actions)
+        td_error_a = q_sa_a - target_q_sa
+        td_error_b = q_sa_b - target_q_sa
+
+        value_loss = td_error_a.pow(2).mul(0.5).mean() + td_error_b.pow(2).mul(0.5).mean()
+        self.value_optimizer.zero_grad()
+        value_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.online_value_model.parameters(), self.value_max_grad_norm)
+        self.value_optimizer.step()
+
+        if np.sum(self.episode_timestep) % self.train_policy_every_steps == 0:
+            argmax_a_q_s = self.online_policy_model(states)
+            max_a_q_s = self.online_value_model.Qa(states, argmax_a_q_s)
+
+            policy_loss = -max_a_q_s.mean()
+            self.policy_optimizer.zero_grad()
+            policy_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.online_policy_model.parameters(), self.policy_max_grad_norm)
+            self.policy_optimizer.step()
+
+    def optimize_model_fn(self) -> Callable:
+        if self.use_double_learning:
+            return self.optimize_model_with_double_learning
+        else:
+            return self.optimize_model_with_single_learning
+
+    def interaction_step(self, state: np.ndarray, env: gymnasium.Env):
         state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         action = self.training_strategy.select_action(
             self.online_policy_model, state_tensor, len(self.replay_buffer) < self.min_samples)
@@ -379,15 +444,17 @@ class DeepDeterministicPolicyGradientModel(RLModel):
         experience = (state, action, reward, new_state, float(is_terminal and not is_truncated))
 
         self.replay_buffer.store(experience)
-        self.episode_reward[-1] += float(reward) * pow(self.gamma, step)
+        self.episode_reward[-1] += float(reward)
         self.episode_timestep[-1] += 1
         self.episode_exploration[-1] += self.training_strategy.ratio_noise_injected
         return new_state, is_terminal or is_truncated
 
-    def update_networks(self, tau: float):
+    def update_value_network(self, tau: float):
         for target, online in zip(self.target_value_model.parameters(), self.online_value_model.parameters()):
             mixed_weights = (1.0 - tau) * target.data + tau * online.data
             target.data.copy_(mixed_weights)
+
+    def update_policy_network(self, tau: float):
         for target, online in zip(self.target_policy_model.parameters(), self.online_policy_model.parameters()):
             mixed_weights = (1.0 - tau) * target.data + tau * online.data
             target.data.copy_(mixed_weights)
@@ -424,11 +491,13 @@ class DeepDeterministicPolicyGradientModel(RLModel):
 
         self.target_value_model = self.value_model_fn(nS, nA).to(self.device)
         self.online_value_model = self.value_model_fn(nS, nA).to(self.device)
+        self.update_value_network(tau=1.0)
+
         self.target_policy_model = self.policy_model_fn(nS, action_bounds, self.device).to(self.device)
         self.online_policy_model = self.policy_model_fn(nS, action_bounds, self.device).to(self.device)
-        self.replay_model = self.online_policy_model
+        self.update_policy_network(tau=1.0)
 
-        self.update_networks(tau=1.0)
+        self.replay_model = self.online_policy_model
 
         self.value_optimizer = self.value_optimizer_fn(self.online_value_model, self.value_optimizer_lr)
         self.policy_optimizer = self.policy_optimizer_fn(self.online_policy_model, self.policy_optimizer_lr)
@@ -438,6 +507,8 @@ class DeepDeterministicPolicyGradientModel(RLModel):
         self.evaluation_strategy = self.evaluation_strategy_fn(action_bounds)
 
         self.min_samples = self.replay_buffer.batch_size * self.n_warmup_batches
+
+        optimize_model = self.optimize_model_fn()
 
         print(f'{self.name} Training start. (seed: {self.seed})')
 
@@ -452,15 +523,18 @@ class DeepDeterministicPolicyGradientModel(RLModel):
             self.episode_timestep.append(0.0)
             self.episode_exploration.append(0.0)
 
-            for step in count():
-                state, is_terminal = self.interaction_step(state, env, step)
+            for _ in count():
+                state, is_terminal = self.interaction_step(state, env)
                 if self.replay_buffer.can_optimize():
                     experiences = self.replay_buffer.sample()
                     experiences.load(self.device)
-                    self.optimize_model(experiences)
+                    optimize_model(experiences)
 
-                if np.sum(self.episode_timestep) % self.update_target_every_steps == 0:
-                    self.update_networks(self.tau)
+                if np.sum(self.episode_timestep) % self.update_value_target_every_steps == 0:
+                    self.update_value_network(self.tau)
+
+                if np.sum(self.episode_timestep) % self.update_policy_target_every_steps == 0:
+                    self.update_policy_network(self.tau)
 
                 if is_terminal:
                     gc.collect()
@@ -541,11 +615,11 @@ class DeepDeterministicPolicyGradientModel(RLModel):
         for _ in range(n_episodes):
             state, _ = eval_env.reset()
             results.append(0)
-            for step in count():
+            for _ in count():
                 state = torch.tensor(state, dtype=torch.float32).to(self.device).unsqueeze(0)
                 action = self.evaluation_strategy.select_action(eval_policy_model, state)
                 state, reward, terminated, truncated, _ = eval_env.step(action)
-                results[-1] += float(reward) * pow(self.gamma, step)
+                results[-1] += float(reward)
                 if render:
                     self.frames.append(eval_env.render())
                 if terminated or truncated:

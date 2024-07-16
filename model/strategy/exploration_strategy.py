@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from torch import nn
 from abc import ABCMeta, abstractmethod
 
@@ -13,7 +14,8 @@ class ExplorationStrategy(metaclass=ABCMeta):
 
     @staticmethod
     def _forward(model: nn.Module, state) -> np.ndarray:
-        return model(state).detach().cpu().numpy().squeeze()
+        with torch.no_grad():
+            return model(state).detach().cpu().numpy().squeeze()
 
 
 class GreedyStrategy(ExplorationStrategy):
@@ -187,4 +189,42 @@ class GaussianNoiseStrategy(ExplorationStrategy):
         action = np.clip(noisy_action, self.low, self.high)
 
         self.ratio_noise_injected = np.mean(abs((greedy_action - action) / (self.high - self.low)))
+        return action
+
+
+class DecayingGaussianNoiseStrategy(ExplorationStrategy):
+
+    def __init__(self, bounds, init_noise_ratio=0.5, min_noise_ratio=0.1, decay_steps=10000):
+        super().__init__(None)
+
+        self.t = 0
+        self.low, self.high = bounds
+        self.noise_ratio = init_noise_ratio
+        self.init_noise_ratio = init_noise_ratio
+        self.min_noise_ratio = min_noise_ratio
+        self.decay_steps = decay_steps
+        self.ratio_noise_injected = 0
+
+    def _noise_ratio_update(self):
+        noise_ratio = 1 - self.t / self.decay_steps
+        noise_ratio = (self.init_noise_ratio - self.min_noise_ratio) * noise_ratio + self.min_noise_ratio
+        noise_ratio = np.clip(noise_ratio, self.min_noise_ratio, self.init_noise_ratio)
+        self.t += 1
+        self.noise_ratio = noise_ratio
+
+    def select_action(self, model, state, max_exploration=False):
+        if max_exploration:
+            noise_scale = self.high
+        else:
+            noise_scale = self.noise_ratio * self.high
+
+        with torch.no_grad():
+            greedy_action = self._forward(model, state)
+
+        noise = np.random.normal(loc=0, scale=noise_scale, size=len(self.high))
+        noisy_action = greedy_action + noise
+        action = np.clip(noisy_action, self.low, self.high)
+
+        self._noise_ratio_update()
+        self.ratio_noise_injected = np.mean(abs((greedy_action - action)/(self.high - self.low)))
         return action

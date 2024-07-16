@@ -18,6 +18,14 @@ def create_environment_setting(env_name: str) -> dict:
             'max_episodes': 500,
             'goal_mean_100_reward': -150
         }
+    elif env_name == 'Hopper-v5':
+        return {
+            'env_name': env_name,
+            'gamma': 0.99,
+            'max_minutes': 300,
+            'max_episodes': 10000,
+            'goal_mean_100_reward': 1500
+        }
     else:
         assert False, 'No such environment name {}'.format(env_name)
 
