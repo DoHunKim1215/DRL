@@ -26,6 +26,22 @@ def create_environment_setting(env_name: str) -> dict:
             'max_episodes': 10000,
             'goal_mean_100_reward': 1500
         }
+    elif env_name == 'HalfCheetah-v5':
+        return {
+            'env_name': env_name,
+            'gamma': 0.99,
+            'max_minutes': 300,
+            'max_episodes': 10000,
+            'goal_mean_100_reward': 2000
+        }
+    elif env_name == 'LunarLander-v3':
+        return {
+            'env_name': env_name,
+            'gamma': 0.99,
+            'max_minutes': 20,
+            'max_episodes': 2000,
+            'goal_mean_100_reward': 250
+        }
     else:
         assert False, 'No such environment name {}'.format(env_name)
 

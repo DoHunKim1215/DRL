@@ -18,7 +18,10 @@ from model.net.q_net import QNetwork
 from model.strategy.exploration_strategy import ExplorationStrategy
 
 
-class AdvantageActorCriticModel(RLModel):
+class MultiEnvActorCriticModel(RLModel):
+    """
+    A2C (Advantage Actor-Critic)
+    """
 
     def __init__(self,
                  ac_model_fn: Callable[[int, int], StochasticPNetwork],
@@ -31,7 +34,7 @@ class AdvantageActorCriticModel(RLModel):
                  n_workers: int,
                  tau: float,
                  args: argparse.Namespace):
-        super(AdvantageActorCriticModel, self).__init__(args)
+        super(MultiEnvActorCriticModel, self).__init__(args)
 
         assert n_workers > 1
 
@@ -296,7 +299,10 @@ class AdvantageActorCriticModel(RLModel):
         return np.mean(results), np.std(results)
 
 
-class DeepDeterministicPolicyGradientModel(RLModel):
+class DeterministicPolicyACModel(RLModel):
+    """
+    DDPG (Deep Deterministic Policy Gradient), TD3 (Twin-Delayed DDPG)
+    """
 
     def __init__(self,
                  replay_buffer_fn: Callable[[], ExperienceBuffer],
@@ -625,3 +631,580 @@ class DeepDeterministicPolicyGradientModel(RLModel):
                 if terminated or truncated:
                     break
         return np.mean(results), np.std(results)
+
+
+class StochasticPolicyACModel(RLModel):
+    """
+    SAC (Soft Actor-Critic)
+    """
+
+    def __init__(self,
+                 replay_buffer_fn,
+                 policy_model_fn,
+                 policy_max_grad_norm,
+                 policy_optimizer_fn,
+                 policy_optimizer_lr,
+                 value_model_fn,
+                 value_max_grad_norm,
+                 value_optimizer_fn,
+                 value_optimizer_lr,
+                 n_warmup_batches,
+                 update_target_every_steps,
+                 tau,
+                 args: argparse.Namespace):
+        super().__init__(args)
+
+        self.replay_buffer_fn = replay_buffer_fn
+
+        self.replay_buffer = None
+
+        self.policy_model_fn = policy_model_fn
+        self.policy_max_grad_norm = policy_max_grad_norm
+        self.policy_optimizer_fn = policy_optimizer_fn
+        self.policy_optimizer_lr = policy_optimizer_lr
+
+        self.policy_model = None
+        self.policy_optimizer = None
+
+        self.value_model_fn = value_model_fn
+        self.value_max_grad_norm = value_max_grad_norm
+        self.value_optimizer_fn = value_optimizer_fn
+        self.value_optimizer_lr = value_optimizer_lr
+
+        self.target_value_model_a = None
+        self.online_value_model_a = None
+        self.target_value_model_b = None
+        self.online_value_model_b = None
+        self.value_optimizer_a = None
+        self.value_optimizer_b = None
+
+        self.n_warmup_batches = n_warmup_batches
+        self.update_target_every_steps = update_target_every_steps
+
+        self.tau = tau
+
+    def optimize_model(self, experiences):
+        _, __, (states, actions, rewards, next_states, is_terminals) = experiences.decompose()
+
+        # policy loss
+        current_actions, log_probs, _ = self.policy_model.select_action_informatively(states)
+
+        target_alpha = (log_probs + self.policy_model.target_entropy).detach()
+        alpha_loss = -(self.policy_model.logalpha * target_alpha).mean()
+
+        self.policy_model.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.policy_model.alpha_optimizer.step()
+        alpha = self.policy_model.logalpha.exp()
+
+        # Q loss
+        next_actions, next_log_probs, _ = self.policy_model.select_action_informatively(next_states)
+        q_spap_a = self.target_value_model_a(next_states, next_actions)
+        q_spap_b = self.target_value_model_b(next_states, next_actions)
+        q_spap = torch.min(q_spap_a, q_spap_b) - alpha * next_log_probs
+        target_q_sa = (rewards + self.gamma * q_spap * (1 - is_terminals)).detach()
+
+        q_sa_a = self.online_value_model_a(states, actions)
+        q_sa_b = self.online_value_model_b(states, actions)
+        qa_loss = (q_sa_a - target_q_sa).pow(2).mul(0.5).mean()
+        qb_loss = (q_sa_b - target_q_sa).pow(2).mul(0.5).mean()
+
+        self.value_optimizer_a.zero_grad()
+        qa_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.online_value_model_a.parameters(), self.value_max_grad_norm)
+        self.value_optimizer_a.step()
+
+        self.value_optimizer_b.zero_grad()
+        qb_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.online_value_model_b.parameters(), self.value_max_grad_norm)
+        self.value_optimizer_b.step()
+
+        current_q_sa_a = self.online_value_model_a(states, current_actions)
+        current_q_sa_b = self.online_value_model_b(states, current_actions)
+        current_q_sa = torch.min(current_q_sa_a, current_q_sa_b)
+        policy_loss = (alpha * log_probs - current_q_sa).mean()
+
+        self.policy_optimizer.zero_grad()
+        policy_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.policy_max_grad_norm)
+        self.policy_optimizer.step()
+
+    def interaction_step(self, state, env):
+        min_samples = self.replay_buffer.batch_size * self.n_warmup_batches
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        if len(self.replay_buffer) < min_samples:
+            action = self.policy_model.select_random_action(state_tensor)
+        else:
+            action = self.policy_model.select_action(state_tensor)
+
+        new_state, reward, is_terminal, is_truncated, _ = env.step(action)
+        experience = (state, action, reward, new_state, float(is_terminal and not is_truncated))
+
+        self.replay_buffer.store(experience)
+        self.episode_reward[-1] += reward
+        self.episode_timestep[-1] += 1
+        self.episode_exploration[-1] += self.policy_model.exploration_ratio
+        return new_state, is_terminal or is_truncated
+
+    def update_value_networks(self, tau: float):
+        for target, online in zip(self.target_value_model_a.parameters(), self.online_value_model_a.parameters()):
+            mixed_weights = (1.0 - tau) * target.data + tau * online.data
+            target.data.copy_(mixed_weights)
+        for target, online in zip(self.target_value_model_b.parameters(), self.online_value_model_b.parameters()):
+            mixed_weights = (1.0 - tau) * target.data + tau * online.data
+            target.data.copy_(mixed_weights)
+
+    def train(self, make_env_fn, make_env_kwargs, seed, gamma,
+              max_minutes, max_episodes, goal_mean_100_reward):
+        training_start, last_debug_time = time.time(), float('-inf')
+
+        self.make_env_fn = make_env_fn
+        self.make_env_kwargs = make_env_kwargs
+        self.seed = seed
+        self.gamma = gamma
+
+        env = self.make_env_fn(**self.make_env_kwargs)
+        env.reset(seed=self.seed)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+
+        nS, nA = env.observation_space.shape[0], env.action_space.shape[0]
+        action_bounds = env.action_space.low, env.action_space.high
+        self.episode_timestep = []
+        self.episode_reward = []
+        self.episode_seconds = []
+        self.evaluation_scores = []
+        self.episode_exploration = []
+
+        self.target_value_model_a = self.value_model_fn(nS, nA).to(self.device)
+        self.online_value_model_a = self.value_model_fn(nS, nA).to(self.device)
+        self.target_value_model_b = self.value_model_fn(nS, nA).to(self.device)
+        self.online_value_model_b = self.value_model_fn(nS, nA).to(self.device)
+        self.update_value_networks(tau=1.0)
+
+        self.policy_model = self.policy_model_fn(nS, action_bounds, self.device).to(self.device)
+        self.replay_model = self.policy_model
+
+        self.value_optimizer_a = self.value_optimizer_fn(self.online_value_model_a, self.value_optimizer_lr)
+        self.value_optimizer_b = self.value_optimizer_fn(self.online_value_model_b, self.value_optimizer_lr)
+        self.policy_optimizer = self.policy_optimizer_fn(self.policy_model, self.policy_optimizer_lr)
+
+        self.replay_buffer = self.replay_buffer_fn()
+
+        print(f'{self.name} Training start. (seed: {self.seed})')
+
+        result = np.empty((max_episodes, 5))
+        result[:] = np.nan
+        training_time = 0
+        for episode in range(1, max_episodes + 1):
+            episode_start = time.time()
+
+            state, _ = env.reset()
+            self.episode_reward.append(0.0)
+            self.episode_timestep.append(0.0)
+            self.episode_exploration.append(0.0)
+
+            for _ in count():
+                state, is_terminal = self.interaction_step(state, env)
+
+                if self.replay_buffer.can_optimize():
+                    experiences = self.replay_buffer.sample()
+                    experiences.load(self.device)
+                    self.optimize_model(experiences)
+
+                if np.sum(self.episode_timestep) % self.update_target_every_steps == 0:
+                    self.update_value_networks(tau=self.tau)
+
+                if is_terminal:
+                    gc.collect()
+                    break
+
+            # stats
+            episode_elapsed = time.time() - episode_start
+            self.episode_seconds.append(episode_elapsed)
+            training_time += episode_elapsed
+            evaluation_score, _ = self.evaluate(self.policy_model, env)
+            self.save_checkpoint(episode - 1, self.policy_model)
+
+            total_step = int(np.sum(self.episode_timestep))
+            self.evaluation_scores.append(evaluation_score)
+
+            mean_10_reward = np.mean(self.episode_reward[-10:])
+            std_10_reward = np.std(self.episode_reward[-10:])
+            mean_100_reward = np.mean(self.episode_reward[-100:])
+            std_100_reward = np.std(self.episode_reward[-100:])
+            mean_100_eval_score = np.mean(self.evaluation_scores[-100:])
+            std_100_eval_score = np.std(self.evaluation_scores[-100:])
+            lst_100_exp_rat = np.array(self.episode_exploration[-100:]) / np.array(self.episode_timestep[-100:])
+            mean_100_exp_rat = np.mean(lst_100_exp_rat)
+            std_100_exp_rat = np.std(lst_100_exp_rat)
+
+            wallclock_elapsed = time.time() - training_start
+            result[episode - 1] = total_step, mean_100_reward, \
+                mean_100_eval_score, training_time, wallclock_elapsed
+
+            reached_debug_time = time.time() - last_debug_time >= self.leave_print_every_n_secs
+            reached_max_minutes = wallclock_elapsed >= max_minutes * 60
+            reached_max_episodes = episode >= max_episodes
+            reached_goal_mean_reward = mean_100_eval_score >= goal_mean_100_reward
+            training_is_over = reached_max_minutes or reached_max_episodes or reached_goal_mean_reward
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - training_start))
+            debug_message = '[{}] EP {:04}, STEP {:07}, '
+            debug_message += 'REWARD[-10:] {:05.1f}\u00B1{:05.1f}, '
+            debug_message += 'REWARD[-100:] {:05.1f}\u00B1{:05.1f}, '
+            debug_message += 'EXP RATE[-100:] {:02.1f}\u00B1{:02.1f}, '
+            debug_message += 'EVAL SCORE[-100:] {:05.1f}\u00B1{:05.1f}'
+            debug_message = debug_message.format(
+                elapsed_str, episode - 1, total_step, mean_10_reward, std_10_reward,
+                mean_100_reward, std_100_reward, mean_100_exp_rat, std_100_exp_rat,
+                mean_100_eval_score, std_100_eval_score)
+
+            print(debug_message, end='\r', flush=True)
+
+            if reached_debug_time or training_is_over:
+                print(self.ERASE_LINE + debug_message, flush=True)
+                last_debug_time = time.time()
+
+            if training_is_over:
+                if reached_max_minutes:
+                    print(u'--> reached_max_minutes \u2715')
+                if reached_max_episodes:
+                    print(u'--> reached_max_episodes \u2715')
+                if reached_goal_mean_reward:
+                    print(u'--> reached_goal_mean_reward \u2713')
+                break
+
+        final_eval_score, score_std = self.evaluate(self.policy_model, env, n_episodes=100)
+        wallclock_time = time.time() - training_start
+        print('Training complete.')
+        print('Final evaluation score {:.2f}\u00B1{:.2f} in {:.2f}s training time,'
+              ' {:.2f}s wall-clock time.\n'.format(final_eval_score, score_std, training_time, wallclock_time))
+        env.close()
+        del env
+        self.get_cleaned_checkpoints()
+        return result, final_eval_score, training_time, wallclock_time
+
+    def evaluate(self, eval_policy_model, eval_env, n_episodes=1, render=False):
+        self.frames.clear()
+        results = []
+        if render:
+            for _ in range(n_episodes):
+                state, _ = eval_env.reset()
+                results.append(0)
+                for _ in count():
+                    state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+                    action = eval_policy_model.select_greedy_action(state_tensor)
+                    state, reward, terminated, truncated, _ = eval_env.step(action)
+                    results[-1] += reward
+                    self.frames.append(eval_env.render())
+                    if terminated or truncated:
+                        break
+        else:
+            for _ in range(n_episodes):
+                state, _ = eval_env.reset()
+                results.append(0)
+                for _ in count():
+                    state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+                    action = eval_policy_model.select_greedy_action(state_tensor)
+                    state, reward, terminated, truncated, _ = eval_env.step(action)
+                    results[-1] += reward
+                    if terminated or truncated:
+                        break
+
+        return np.mean(results), np.std(results)
+
+
+class PPO(RLModel):
+    EPS = 1e-6
+
+    def __init__(self,
+                 policy_model_fn,
+                 policy_model_max_grad_norm,
+                 policy_optimizer_fn,
+                 policy_optimizer_lr,
+                 policy_optimization_epochs,
+                 policy_sample_ratio,
+                 policy_clip_range,
+                 policy_stopping_kl,
+                 value_model_fn,
+                 value_model_max_grad_norm,
+                 value_optimizer_fn,
+                 value_optimizer_lr,
+                 value_optimization_epochs,
+                 value_sample_ratio,
+                 value_clip_range,
+                 value_stopping_mse,
+                 episode_buffer_fn,
+                 max_buffer_episodes,
+                 max_buffer_episode_steps,
+                 entropy_loss_weight,
+                 tau,
+                 n_workers,
+                 args):
+        super().__init__(args)
+
+        assert n_workers > 1
+        assert max_buffer_episodes >= n_workers
+
+        self.make_envs_fn = None
+
+        self.policy_model_fn = policy_model_fn
+        self.policy_model_max_grad_norm = policy_model_max_grad_norm
+        self.policy_optimizer_fn = policy_optimizer_fn
+        self.policy_optimizer_lr = policy_optimizer_lr
+        self.policy_optimization_epochs = policy_optimization_epochs
+        self.policy_sample_ratio = policy_sample_ratio
+        self.policy_clip_range = policy_clip_range
+        self.policy_stopping_kl = policy_stopping_kl
+
+        self.policy_model = None
+        self.policy_optimizer = None
+
+        self.value_model_fn = value_model_fn
+        self.value_model_max_grad_norm = value_model_max_grad_norm
+        self.value_optimizer_fn = value_optimizer_fn
+        self.value_optimizer_lr = value_optimizer_lr
+        self.value_optimization_epochs = value_optimization_epochs
+        self.value_sample_ratio = value_sample_ratio
+        self.value_clip_range = value_clip_range
+        self.value_stopping_mse = value_stopping_mse
+
+        self.value_model = None
+        self.value_optimizer = None
+
+        self.episode_buffer_fn = episode_buffer_fn
+        self.max_buffer_episodes = max_buffer_episodes
+        self.max_buffer_episode_steps = max_buffer_episode_steps
+
+        self.episode_buffer = None
+
+        self.entropy_loss_weight = entropy_loss_weight
+        self.tau = tau
+        self.n_workers = n_workers
+
+    def optimize_model(self):
+        states, actions, returns, gaes, log_probs = self.episode_buffer.get_stacks()
+
+        states_tensor = torch.tensor(states, device=self.device, dtype=torch.float32)
+        if len(states_tensor.size()) == 1:
+            states_tensor = states_tensor.unsqueeze(0)
+        values = self.value_model(states_tensor).detach()
+        gaes = (gaes - gaes.mean()) / (gaes.std() + self.EPS)
+        n_samples = len(actions)
+
+        for _ in range(self.policy_optimization_epochs):
+            batch_size = int(self.policy_sample_ratio * n_samples)
+            batch_idxs = np.random.choice(n_samples, batch_size, replace=False)
+            states_batch = states[batch_idxs]
+            actions_batch = actions[batch_idxs]
+            gaes_batch = gaes[batch_idxs]
+            log_probs_batch = log_probs[batch_idxs]
+
+            states_batch = torch.tensor(states_batch, device=self.device, dtype=torch.float32)
+            if len(states_batch.size()) == 1:
+                states_batch = states_batch.unsqueeze(0)
+            actions_batch = torch.tensor(actions_batch, device=self.device, dtype=torch.float32)
+            if len(actions_batch.size()) == 1:
+                actions_batch = actions_batch.unsqueeze(0)
+            log_probs_pred, entropies_pred = self.policy_model.get_predictions(states_batch, actions_batch)
+
+            ratios = (log_probs_pred - log_probs_batch).exp()
+            pi_obj = gaes_batch * ratios
+            pi_obj_clipped = gaes_batch * ratios.clamp(1.0 - self.policy_clip_range, 1.0 + self.policy_clip_range)
+            policy_loss = -torch.min(pi_obj, pi_obj_clipped).mean()
+            entropy_loss = -entropies_pred.mean() * self.entropy_loss_weight
+
+            self.policy_optimizer.zero_grad()
+            (policy_loss + entropy_loss).backward()
+            torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.policy_model_max_grad_norm)
+            self.policy_optimizer.step()
+
+            with torch.no_grad():
+                actions_tensor = torch.tensor(actions, device=self.device, dtype=torch.float32)
+                if len(actions_tensor.size()) == 1:
+                    actions_tensor = actions_tensor.unsqueeze(0)
+                log_probs_pred_all, _ = self.policy_model.get_predictions(states_tensor, actions_tensor)
+                kl = (log_probs - log_probs_pred_all).mean()
+                if kl.item() > self.policy_stopping_kl:
+                    break
+
+        for _ in range(self.value_optimization_epochs):
+            batch_size = int(self.value_sample_ratio * n_samples)
+            batch_idxs = np.random.choice(n_samples, batch_size, replace=False)
+            states_batch = states[batch_idxs]
+            returns_batch = returns[batch_idxs]
+            values_batch = values[batch_idxs]
+
+            x = torch.tensor(states_batch, device=self.device, dtype=torch.float32)
+            if len(x.size()) == 1:
+                x = x.unsqueeze(0)
+            values_pred = self.value_model(x)
+            values_pred_clipped = values_batch + (values_pred - values_batch).clamp(-self.value_clip_range,
+                                                                                    self.value_clip_range)
+            v_loss = (returns_batch - values_pred).pow(2)
+            v_loss_clipped = (returns_batch - values_pred_clipped).pow(2)
+            value_loss = torch.max(v_loss, v_loss_clipped).mul(0.5).mean()
+
+            self.value_optimizer.zero_grad()
+            value_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.value_model_max_grad_norm)
+            self.value_optimizer.step()
+
+            with torch.no_grad():
+                values_pred_all = self.value_model(states_tensor)
+                mse = (values - values_pred_all).pow(2).mul(0.5).mean()
+                if mse.item() > self.value_stopping_mse:
+                    break
+
+    def train(self,
+              make_envs_fn,
+              make_env_fn,
+              make_env_kwargs,
+              seed,
+              gamma,
+              max_minutes,
+              max_episodes,
+              goal_mean_100_reward):
+        training_start = time.time()
+        last_debug_time = float('-inf')
+
+        self.make_envs_fn = make_envs_fn
+        self.make_env_fn = make_env_fn
+        self.make_env_kwargs = make_env_kwargs
+        self.seed = seed
+        self.gamma = gamma
+
+        env = self.make_env_fn(**self.make_env_kwargs)
+        env.reset(seed=self.seed)
+        envs = self.make_envs_fn(make_env_fn, make_env_kwargs, self.seed, self.n_workers)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+
+        nS, nA = env.observation_space.shape[0], env.action_space.n
+        self.episode_timestep = []
+        self.episode_reward = []
+        self.episode_seconds = []
+        self.episode_exploration = []
+        self.evaluation_scores = []
+
+        self.policy_model = self.policy_model_fn(nS, nA).to(self.device)
+        self.replay_model = self.policy_model
+        self.policy_optimizer = self.policy_optimizer_fn(self.policy_model, self.policy_optimizer_lr)
+
+        self.value_model = self.value_model_fn(nS).to(self.device)
+        self.value_optimizer = self.value_optimizer_fn(self.value_model, self.value_optimizer_lr)
+
+        self.episode_buffer = self.episode_buffer_fn(nS, self.gamma, self.tau,
+                                                     self.n_workers,
+                                                     self.max_buffer_episodes,
+                                                     self.max_buffer_episode_steps,
+                                                     self.device)
+
+        print(f'{self.name} Training start. (seed: {self.seed})')
+
+        result = np.empty((max_episodes, 5))
+        result[:] = np.nan
+        training_time = 0
+        episode = 0
+
+        # collect n_steps rollout
+        while True:
+            episode_timestep, episode_reward, episode_exploration, \
+                episode_seconds = self.episode_buffer.fill(envs, self.policy_model, self.value_model)
+
+            n_ep_batch = len(episode_timestep)
+            self.episode_timestep.extend(episode_timestep)
+            self.episode_reward.extend(episode_reward)
+            self.episode_exploration.extend(episode_exploration)
+            self.episode_seconds.extend(episode_seconds)
+
+            self.optimize_model()
+            self.episode_buffer.clear()
+
+            # stats
+            evaluation_score, _ = self.evaluate(self.policy_model, env)
+            self.evaluation_scores.extend([evaluation_score, ] * n_ep_batch)
+            for e in range(episode, episode + n_ep_batch):
+                self.save_checkpoint(e, self.policy_model)
+            training_time += episode_seconds.sum()
+
+            mean_10_reward = np.mean(self.episode_reward[-10:])
+            std_10_reward = np.std(self.episode_reward[-10:])
+            mean_100_reward = np.mean(self.episode_reward[-100:])
+            std_100_reward = np.std(self.episode_reward[-100:])
+            mean_100_eval_score = np.mean(self.evaluation_scores[-100:])
+            std_100_eval_score = np.std(self.evaluation_scores[-100:])
+            mean_100_exp_rat = np.mean(self.episode_exploration[-100:])
+            std_100_exp_rat = np.std(self.episode_exploration[-100:])
+
+            total_step = int(np.sum(self.episode_timestep))
+            wallclock_elapsed = time.time() - training_start
+            result[episode:episode + n_ep_batch] = total_step, mean_100_reward, \
+                mean_100_eval_score, training_time, wallclock_elapsed
+
+            episode += n_ep_batch
+
+            # debug stuff
+            reached_debug_time = time.time() - last_debug_time >= self.leave_print_every_n_secs
+            reached_max_minutes = wallclock_elapsed >= max_minutes * 60
+            reached_max_episodes = episode + self.max_buffer_episodes >= max_episodes
+            reached_goal_mean_reward = mean_100_eval_score >= goal_mean_100_reward
+            training_is_over = reached_max_minutes or reached_max_episodes or reached_goal_mean_reward
+
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - training_start))
+            debug_message = '[{}] EP {:04}, STEP {:07}, '
+            debug_message += 'REWARD[-10:] {:05.1f}\u00B1{:05.1f}, '
+            debug_message += 'REWARD[-100:] {:05.1f}\u00B1{:05.1f}, '
+            debug_message += 'EXP RATE[-100:] {:02.1f}\u00B1{:02.1f}, '
+            debug_message += 'EVAL SCORE[-100:] {:05.1f}\u00B1{:05.1f}'
+            debug_message = debug_message.format(
+                elapsed_str, episode - 1, total_step, mean_10_reward, std_10_reward,
+                mean_100_reward, std_100_reward, mean_100_exp_rat, std_100_exp_rat,
+                mean_100_eval_score, std_100_eval_score)
+
+            print(debug_message, end='\r', flush=True)
+
+            if reached_debug_time or training_is_over:
+                print(self.ERASE_LINE + debug_message, flush=True)
+                last_debug_time = time.time()
+
+            if training_is_over:
+                if reached_max_minutes:
+                    print(u'--> reached_max_minutes \u2715')
+                if reached_max_episodes:
+                    print(u'--> reached_max_episodes \u2715')
+                if reached_goal_mean_reward:
+                    print(u'--> reached_goal_mean_reward \u2713')
+                break
+
+        final_eval_score, score_std = self.evaluate(self.policy_model, env, n_episodes=100)
+        wallclock_time = time.time() - training_start
+        print('Training complete.')
+        print('Final evaluation score {:.2f}\u00B1{:.2f} in {:.2f}s training time,'
+              ' {:.2f}s wall-clock time.\n'.format(final_eval_score, score_std, training_time, wallclock_time))
+
+        env.close()
+        del env
+        envs.close()
+        del envs
+
+        self.get_cleaned_checkpoints()
+        return result, final_eval_score, training_time, wallclock_time
+
+    def evaluate(self, eval_model, eval_env, n_episodes=1, render=True):
+        self.frames.clear()
+        rs = []
+        for _ in range(n_episodes):
+            s, _ = eval_env.reset()
+            rs.append(0)
+            for _ in count():
+                s = torch.tensor(s, device=self.device, dtype=torch.float32).unsqueeze(0)
+                a = eval_model.select_greedy_action(s)
+                s, r, d, t, _ = eval_env.step(a)
+                rs[-1] += r
+                if render:
+                    self.frames.append(eval_env.render())
+                if d or t: break
+        return np.mean(rs), np.std(rs)

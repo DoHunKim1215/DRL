@@ -6,11 +6,11 @@ from model.agent.async_ac_model import AsyncActorCriticModel
 from model.agent.policy_model import PolicyModel
 from model.agent.q_model import QModel
 from model.agent.rl_model import RLModel
-from model.agent.sync_ac_model import DeepDeterministicPolicyGradientModel, AdvantageActorCriticModel
-from model.experience.experience_buffer import ExhaustingBuffer, ReplayBuffer, PrioritizedReplayBuffer
+from model.agent.sync_ac_model import DeterministicPolicyACModel, MultiEnvActorCriticModel, StochasticPolicyACModel, PPO
+from model.experience.experience_buffer import ExhaustingBuffer, ReplayBuffer, PrioritizedReplayBuffer, EpisodeBuffer
 from model.multiprocess.shared_optimizer import SharedAdam, SharedRMSprop
-from model.net.policy_net import FCDP, FCDAP, FCAC
-from model.net.q_net import FCQV, FCQ, FCDuelingQ, FCTQV
+from model.net.policy_net import FCDP, FCDAP, FCAC, FCGP, FCCA
+from model.net.q_net import FCQV, FCQ, FCDuelingQ, FCTQV, FCQSA
 from model.net.value_net import FCV
 from model.strategy.exploration_strategy import GaussianNoiseStrategy, GreedyStrategy, BoundedGreedyStrategy, \
     DecayingGaussianNoiseStrategy
@@ -179,16 +179,16 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
         ac_model_fn = lambda nS, nA: FCAC(nS, nA, hidden_dims=(256, 128))
         ac_optimizer_fn = lambda net, lr: torch.optim.RMSprop(net.parameters(), lr=lr)
         ac_optimizer_lr = args.actor_critic_lr
-        return AdvantageActorCriticModel(ac_model_fn,
-                                         ac_optimizer_fn,
-                                         ac_optimizer_lr,
-                                         1.0,
-                                         0.6,
-                                         0.001,
-                                         10,
-                                         8,
-                                         0.95,
-                                         args)
+        return MultiEnvActorCriticModel(ac_model_fn,
+                                        ac_optimizer_fn,
+                                        ac_optimizer_lr,
+                                        1.0,
+                                        0.6,
+                                        0.001,
+                                        10,
+                                        8,
+                                        0.95,
+                                        args)
     elif model_name == 'DDPG':
         policy_model_fn = lambda nS, bounds, device: FCDP(nS, bounds, hidden_dims=(256, 256), device=device)
         policy_max_grad_norm = float('inf')
@@ -204,26 +204,26 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
         evaluation_strategy_fn = lambda bounds: BoundedGreedyStrategy(bounds)
 
         replay_buffer_fn = lambda: ReplayBuffer(max_size=100000, batch_size=256)
-        return DeepDeterministicPolicyGradientModel(replay_buffer_fn,
-                                                    policy_model_fn,
-                                                    policy_optimizer_fn,
-                                                    policy_optimizer_lr,
-                                                    policy_max_grad_norm,
-                                                    value_model_fn,
-                                                    value_optimizer_fn,
-                                                    value_optimizer_lr,
-                                                    value_max_grad_norm,
-                                                    training_strategy_fn,
-                                                    evaluation_strategy_fn,
-                                                    args.n_warmup_batches,
-                                                    1,
-                                                    1,
-                                                    1,
-                                                    0.005,
-                                                    0.0,
-                                                    0.0,
-                                                    False,
-                                                    args)
+        return DeterministicPolicyACModel(replay_buffer_fn,
+                                          policy_model_fn,
+                                          policy_optimizer_fn,
+                                          policy_optimizer_lr,
+                                          policy_max_grad_norm,
+                                          value_model_fn,
+                                          value_optimizer_fn,
+                                          value_optimizer_lr,
+                                          value_max_grad_norm,
+                                          training_strategy_fn,
+                                          evaluation_strategy_fn,
+                                          args.n_warmup_batches,
+                                          1,
+                                          1,
+                                          1,
+                                          0.005,
+                                          0.0,
+                                          0.0,
+                                          False,
+                                          args)
     elif model_name == 'TD3':
         policy_model_fn = lambda nS, bounds, device: FCDP(nS, bounds, hidden_dims=(256, 256), device=device)
         policy_max_grad_norm = float('inf')
@@ -242,25 +242,95 @@ def create_rl_model(model_name: str, args: argparse.Namespace) -> RLModel:
         evaluation_strategy_fn = lambda bounds: BoundedGreedyStrategy(bounds)
 
         replay_buffer_fn = lambda: ReplayBuffer(max_size=1000000, batch_size=256)
-        return DeepDeterministicPolicyGradientModel(replay_buffer_fn,
-                                                    policy_model_fn,
-                                                    policy_optimizer_fn,
-                                                    policy_optimizer_lr,
-                                                    policy_max_grad_norm,
-                                                    value_model_fn,
-                                                    value_optimizer_fn,
-                                                    value_optimizer_lr,
-                                                    value_max_grad_norm,
-                                                    training_strategy_fn,
-                                                    evaluation_strategy_fn,
-                                                    args.n_warmup_batches,
-                                                    2,
-                                                    2,
-                                                    2,
-                                                    0.01,
-                                                    0.1,
-                                                    0.5,
-                                                    True,
-                                                    args)
+        return DeterministicPolicyACModel(replay_buffer_fn,
+                                          policy_model_fn,
+                                          policy_optimizer_fn,
+                                          policy_optimizer_lr,
+                                          policy_max_grad_norm,
+                                          value_model_fn,
+                                          value_optimizer_fn,
+                                          value_optimizer_lr,
+                                          value_max_grad_norm,
+                                          training_strategy_fn,
+                                          evaluation_strategy_fn,
+                                          args.n_warmup_batches,
+                                          2,
+                                          2,
+                                          2,
+                                          0.01,
+                                          0.1,
+                                          0.5,
+                                          True,
+                                          args)
+    elif model_name == 'SAC':
+        policy_model_fn = lambda nS, bounds, device: FCGP(nS, bounds, hidden_dims=(256, 256), device=device)
+        policy_max_grad_norm = float('inf')
+        policy_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        policy_optimizer_lr = 0.0003
+
+        value_model_fn = lambda nS, nA: FCQSA(nS, nA, hidden_dims=(256, 256))
+        value_max_grad_norm = float('inf')
+        value_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        value_optimizer_lr = 0.0005
+
+        replay_buffer_fn = lambda: ReplayBuffer(max_size=100000, batch_size=64)
+
+        return StochasticPolicyACModel(replay_buffer_fn,
+                                       policy_model_fn,
+                                       policy_max_grad_norm,
+                                       policy_optimizer_fn,
+                                       policy_optimizer_lr,
+                                       value_model_fn,
+                                       value_max_grad_norm,
+                                       value_optimizer_fn,
+                                       value_optimizer_lr,
+                                       10,
+                                       1,
+                                       0.001,
+                                       args)
+    elif model_name == 'PPO':
+        policy_model_fn = lambda nS, nA: FCCA(nS, nA, hidden_dims=(256, 256))
+        policy_model_max_grad_norm = float('inf')
+        policy_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        policy_optimizer_lr = 0.0003
+        policy_optimization_epochs = 80
+        policy_sample_ratio = 0.8
+        policy_clip_range = 0.1
+        policy_stopping_kl = 0.02
+
+        value_model_fn = lambda nS: FCV(nS, hidden_dims=(256, 256))
+        value_model_max_grad_norm = float('inf')
+        value_optimizer_fn = lambda net, lr: torch.optim.Adam(net.parameters(), lr=lr)
+        value_optimizer_lr = 0.0005
+        value_optimization_epochs = 80
+        value_sample_ratio = 0.8
+        value_clip_range = float('inf')
+        value_stopping_mse = 25
+
+        episode_buffer_fn = lambda sd, g, t, nw, me, mes, dev: EpisodeBuffer(sd, g, t, nw, me, mes, dev)
+
+        return PPO(policy_model_fn,
+                   policy_model_max_grad_norm,
+                   policy_optimizer_fn,
+                   policy_optimizer_lr,
+                   policy_optimization_epochs,
+                   policy_sample_ratio,
+                   policy_clip_range,
+                   policy_stopping_kl,
+                   value_model_fn,
+                   value_model_max_grad_norm,
+                   value_optimizer_fn,
+                   value_optimizer_lr,
+                   value_optimization_epochs,
+                   value_sample_ratio,
+                   value_clip_range,
+                   value_stopping_mse,
+                   episode_buffer_fn,
+                   16,
+                   1000,
+                   0.01,
+                   0.97,
+                   8,
+                   args)
     else:
         assert False, 'No such model name {}'.format(model_name)

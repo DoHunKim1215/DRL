@@ -30,4 +30,4 @@ class FCV(VNetwork):
         x = self.activation_fc(self.input_layer(state))
         for hidden_layer in self.hidden_layers:
             x = self.activation_fc(hidden_layer(x))
-        return self.output_layer(x)
+        return self.output_layer(x).squeeze()

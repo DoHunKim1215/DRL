@@ -13,7 +13,7 @@ def make_dir(dir_path: str):
 def get_args() -> argparse.Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser()
 
-    model_name = 'TD3'
+    model_name = 'PPO'
 
     # file and directory
     parser.add_argument('--model_out_dir', type=str, default=f'results\\{model_name}\\weights')
@@ -27,7 +27,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--figure_name', type=str, default='plot')
 
     # environment
-    parser.add_argument('--env_name', type=str, default='Pendulum-v1')
+    parser.add_argument('--env_name', type=str, default='LunarLander-v3')
     parser.add_argument('--init_seed', type=int, default=13)
     parser.add_argument('--n_case', type=int, default=3)
     parser.add_argument('--gamma', type=float, default=1.00)
@@ -38,26 +38,13 @@ def get_args() -> argparse.Namespace:
     # learning
     parser.add_argument('--strategy_name',
                         type=str,
-                        choices=['greedy',
-                                 'epsilon_greedy',
-                                 'linearly_decaying_epsilon_greedy',
-                                 'exponentially_decaying_epsilon_greedy',
-                                 'softmax'],
+                        choices=['greedy', 'epsilon_greedy', 'linearly_decaying_epsilon_greedy',
+                                 'exponentially_decaying_epsilon_greedy', 'softmax'],
                         default='exponentially_decaying_epsilon_greedy')
     parser.add_argument('--model_name',
                         type=str,
-                        choices=['NFQ',
-                                 'DQN',
-                                 'DDQN',
-                                 'DuelingDDQN',
-                                 'DuelingDDQN+PER',
-                                 'REINFORCE',
-                                 'VPG',
-                                 'A3C',
-                                 'GAE',
-                                 'A2C',
-                                 'DDPG',
-                                 'TD3'],
+                        choices=['NFQ', 'DQN', 'DDQN', 'DuelingDDQN', 'DuelingDDQN+PER', 'REINFORCE',
+                                 'VPG', 'A3C', 'GAE', 'DDPG', 'TD3', 'SAC', 'PPO'],
                         default=model_name)
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--policy_lr', type=float, default=0.0005)

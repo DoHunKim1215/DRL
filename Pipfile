@@ -16,12 +16,13 @@ prettytable = "*"
 plotly = "*"
 ipython = "*"
 opencv-python = "*"
-torch = {version = "*", index = "pytorch"}
-torchvision = {version = "*", index = "pytorch"}
-torchaudio = {version = "*", index = "pytorch"}
+torch = { index = "pytorch"}
+torchvision = { index = "pytorch"}
+torchaudio = { index = "pytorch"}
 dill = "*"
 mujoco-py = "*"
-gymnasium = {extras = ["mujoco"], version = "*"}
+swig = "*"
+gymnasium = {extras = ["box2d"], version = "*"}
 
 [dev-packages]
 

@@ -18,7 +18,7 @@ if __name__ == '__main__':
     seeds = []
     random.seed(args.init_seed)
     for _ in range(args.n_case):
-        seeds.append(random.randint(0, 2**16 - 1))
+        seeds.append(random.randint(0, 2 ** 16 - 1))
 
     results = []
     agents, best_agent_key, best_eval_score = {}, None, float('-inf')
@@ -35,14 +35,15 @@ if __name__ == '__main__':
                           env_setting['max_minutes'],
                           env_setting['max_episodes'],
                           env_setting['goal_mean_100_reward']) \
-            if args.model_name != 'A2C' else agent.train(make_envs_fn,
-                                                         make_env_fn,
-                                                         {'env_name': env_setting['env_name']},
-                                                         seed,
-                                                         env_setting['gamma'],
-                                                         env_setting['max_minutes'],
-                                                         env_setting['max_episodes'],
-                                                         env_setting['goal_mean_100_reward'])
+            if args.model_name != 'A2C' and args.model_name != 'PPO' else \
+            agent.train(make_envs_fn,
+                        make_env_fn,
+                        {'env_name': env_setting['env_name']},
+                        seed,
+                        env_setting['gamma'],
+                        env_setting['max_minutes'],
+                        env_setting['max_episodes'],
+                        env_setting['goal_mean_100_reward'])
 
         results.append(result)
         agents[seed] = agent

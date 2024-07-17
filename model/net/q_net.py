@@ -126,3 +126,30 @@ class FCTQV(QNetwork):
         for hidden_layer_a in self.hidden_layers_a:
             xa = self.activation_fc(hidden_layer_a(xa))
         return self.output_layer_a(xa)
+
+
+class FCQSA(nn.Module):
+
+    def __init__(self,
+                 input_state_dim,
+                 input_action_dim,
+                 hidden_dims=(32, 32),
+                 activation_fc=F.relu):
+        super(FCQSA, self).__init__()
+        self.activation_fc = activation_fc
+
+        self.input_layer = nn.Linear(input_state_dim + input_action_dim, hidden_dims[0])
+        self.hidden_layers = nn.ModuleList()
+        for i in range(len(hidden_dims) - 1):
+            hidden_layer = nn.Linear(hidden_dims[i], hidden_dims[i + 1])
+            self.hidden_layers.append(hidden_layer)
+        self.output_layer = nn.Linear(hidden_dims[-1], 1)
+
+    def forward(self, state, action):
+        x = torch.cat((state, action), dim=1)
+        x = self.activation_fc(self.input_layer(x))
+        for i, hidden_layer in enumerate(self.hidden_layers):
+            x = self.activation_fc(hidden_layer(x))
+        x = self.output_layer(x)
+        return x
+
